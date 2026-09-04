@@ -49,27 +49,40 @@ async def run() -> None:
         research_provider = DeepSeekResearchProvider(
             api_key=api_key,
             base_url=settings.deepseek_base_url,
-            model=settings.deepseek_model,
+            model=settings.deepseek_research_model,
             timeout_seconds=settings.deepseek_request_timeout_seconds,
             request_attempts=settings.deepseek_research_attempts,
+            synthesis_attempts=settings.deepseek_synthesis_attempts,
+            max_search_calls_for_synthesis=settings.deepseek_max_search_calls_for_synthesis,
         )
         commentary_generator = DeepSeekCommentaryGenerator(
-            api_key=api_key, base_url=settings.deepseek_base_url,
-            model=settings.deepseek_model, timeout_seconds=settings.deepseek_request_timeout_seconds,
+            api_key=api_key,
+            base_url=settings.deepseek_base_url,
+            model=settings.deepseek_commentary_model,
+            timeout_seconds=settings.deepseek_request_timeout_seconds,
         )
         pdf_service = PdfAcquisitionService(
-            source_registry=source_registry, temp_dir=settings.temp_dir,
-            max_bytes=settings.pdf_max_bytes, max_pages=settings.pdf_max_pages,
+            source_registry=source_registry,
+            temp_dir=settings.temp_dir,
+            max_bytes=settings.pdf_max_bytes,
+            max_pages=settings.pdf_max_pages,
             timeout_seconds=settings.pdf_download_timeout_seconds,
+            connect_timeout_seconds=settings.pdf_connect_timeout_seconds,
             max_redirects=settings.pdf_max_redirects,
         )
         workflow_service = CaseWorkflowService(
-            database=database, subject_loader=subject_loader,
-            research_provider=research_provider, source_registry=source_registry,
-            pdf_service=pdf_service, scoring=ScoringPolicy(), settings=settings,
+            database=database,
+            subject_loader=subject_loader,
+            research_provider=research_provider,
+            source_registry=source_registry,
+            pdf_service=pdf_service,
+            scoring=ScoringPolicy(),
+            settings=settings,
         )
         assignment_service = AssignmentService(
-            generator=commentary_generator, renderer=DocxRenderer(), temp_dir=settings.temp_dir,
+            generator=commentary_generator,
+            renderer=DocxRenderer(),
+            temp_dir=settings.temp_dir,
         )
 
     bot = Bot(token=settings.telegram_bot_token.get_secret_value())

@@ -58,3 +58,12 @@ class SourceRegistry:
         if self.rules.get("require_https", True) and parsed.scheme != "https":
             return False
         return bool(parsed.hostname)
+
+    def can_be_original_pdf_source(self, url: str) -> bool:
+        if not self.is_https_allowed(url):
+            return False
+        classification = self.classify(url)
+        if not classification.is_official:
+            return False
+        source = self._domains.get(classification.domain) or {}
+        return bool(source.get("supports_direct_pdf", False))

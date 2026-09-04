@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     delete_files_after_send: bool = True
 
+    pdf_max_bytes: int = 50 * 1024 * 1024
+    pdf_max_pages: int = 1500
+    pdf_download_timeout_seconds: float = 90.0
+    pdf_max_redirects: int = 5
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

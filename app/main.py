@@ -10,6 +10,7 @@ from aiogram import Bot, Dispatcher
 
 from app.bot.middlewares import AccessMiddleware
 from app.bot.routers import admin_router, start_router, subjects_router
+from app.catalog import CatalogFirstResearchProvider, CatalogResearchProvider, CatalogStore
 from app.commentary import DeepSeekCommentaryGenerator, DocxRenderer
 from app.core.logging_config import setup_logging
 from app.core.settings import get_settings
@@ -43,9 +44,21 @@ async def run() -> None:
     subject_loader.validate_all()
     source_registry = SourceRegistry()
     access_service = AccessService(settings.owner_telegram_id, database)
+    catalog_store = CatalogStore(database)
 
-    research_provider = None
-    workflow_service = None
+    pdf_service = PdfAcquisitionService(
+        source_registry=source_registry,
+        temp_dir=settings.temp_dir,
+        max_bytes=settings.pdf_max_bytes,
+        max_pages=settings.pdf_max_pages,
+        timeout_seconds=settings.pdf_download_timeout_seconds,
+        connect_timeout_seconds=settings.pdf_connect_timeout_seconds,
+        max_redirects=settings.pdf_max_redirects,
+    )
+
+    # Web research is intentionally optional. The primary path for all 34
+    # subjects is the reusable local catalog built from official collections.
+    web_fallback = None
     assignment_service = None
     if settings.deepseek_api_key and settings.deepseek_api_key.get_secret_value().strip():
         api_key = settings.deepseek_api_key.get_secret_value()
@@ -61,7 +74,7 @@ async def run() -> None:
             discovery_reasoning_effort=settings.deepseek_research_reasoning_effort,
             synthesis_reasoning_effort=settings.deepseek_synthesis_reasoning_effort,
         )
-        research_provider = RobustResearchProvider(
+        web_fallback = RobustResearchProvider(
             inner=deepseek_research,
             api_key=api_key,
             base_url=settings.deepseek_base_url,
@@ -76,15 +89,25 @@ async def run() -> None:
             connect_timeout_seconds=settings.deepseek_connect_timeout_seconds,
             reasoning_effort=settings.deepseek_commentary_reasoning_effort,
         )
-        pdf_service = PdfAcquisitionService(
-            source_registry=source_registry,
+        assignment_service = AssignmentService(
+            generator=commentary_generator,
+            renderer=DocxRenderer(),
             temp_dir=settings.temp_dir,
-            max_bytes=settings.pdf_max_bytes,
-            max_pages=settings.pdf_max_pages,
-            timeout_seconds=settings.pdf_download_timeout_seconds,
-            connect_timeout_seconds=settings.pdf_connect_timeout_seconds,
-            max_redirects=settings.pdf_max_redirects,
         )
+
+    catalog_provider = CatalogResearchProvider(catalog_store)
+    if settings.catalog_enabled:
+        research_provider = CatalogFirstResearchProvider(
+            catalog=catalog_provider,
+            fallback=web_fallback,
+            min_catalog_candidates=settings.catalog_min_candidates_before_fallback,
+            fallback_enabled=settings.catalog_fallback_to_web,
+        )
+    else:
+        research_provider = web_fallback
+
+    workflow_service = None
+    if research_provider is not None:
         workflow_service = CaseWorkflowService(
             database=database,
             subject_loader=subject_loader,
@@ -94,17 +117,23 @@ async def run() -> None:
             scoring=ScoringPolicy(),
             settings=settings,
         )
-        assignment_service = AssignmentService(
-            generator=commentary_generator,
-            renderer=DocxRenderer(),
-            temp_dir=settings.temp_dir,
-        )
+
+    stats = await catalog_store.stats()
+    logger.info(
+        "Official catalog ready cases=%d collections=%d sources=%d catalog_enabled=%s web_fallback=%s",
+        stats.cases,
+        stats.collections,
+        stats.sources,
+        settings.catalog_enabled,
+        web_fallback is not None and settings.catalog_fallback_to_web,
+    )
 
     bot = Bot(token=settings.telegram_bot_token.get_secret_value())
     dispatcher = Dispatcher()
     dispatcher["access_service"] = access_service
     dispatcher["subject_loader"] = subject_loader
     dispatcher["source_registry"] = source_registry
+    dispatcher["catalog_store"] = catalog_store
     dispatcher["research_provider"] = research_provider
     dispatcher["workflow_service"] = workflow_service
     dispatcher["assignment_service"] = assignment_service

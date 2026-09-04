@@ -17,6 +17,7 @@ from app.core.constants import (
 )
 from app.core.settings import Settings
 from app.knowledge import SubjectLoader
+from app.research import ResearchServiceError
 from app.services import AssignmentService, CaseWorkflowService, NoSuitableCasesError
 
 logger = logging.getLogger(__name__)
@@ -128,21 +129,30 @@ async def _start_search(
             slug,
             progress=progress.set_phase,
         )
+    except ResearchServiceError as exc:
+        logger.exception(
+            "Research service failure subject=%s code=%s detail=%s",
+            slug,
+            exc.code,
+            exc.detail,
+        )
+        await progress.stop(f"{exc.user_message}\n\nرمز التشخيص: {exc.code}")
+        return
     except NoSuitableCasesError:
         await progress.stop(
             "❌ انتهى البحث دون العثور على قضية مناسبة بملف PDF أصلي قابل للتحقق.\nلم يتم اعتماد أي قضية."
         )
         return
-    except (httpx.HTTPError, ValueError, KeyError):
+    except (httpx.HTTPError, ValueError, KeyError) as exc:
         logger.exception("Case preparation failed subject=%s", slug)
         await progress.stop(
-            "❌ تعذر إكمال البحث والتحقق حالياً. لم يتم اعتماد أي قضية."
+            f"❌ تعذر إكمال البحث والتحقق حالياً. لم يتم اعتماد أي قضية.\n\nرمز التشخيص: {type(exc).__name__}"
         )
         return
-    except Exception:
+    except Exception as exc:
         logger.exception("Unexpected case preparation failure subject=%s", slug)
         await progress.stop(
-            "❌ حدث خطأ غير متوقع أثناء البحث. لم يتم اعتماد أي قضية."
+            f"❌ حدث خطأ غير متوقع أثناء البحث. لم يتم اعتماد أي قضية.\n\nرمز التشخيص: {type(exc).__name__}"
         )
         return
 

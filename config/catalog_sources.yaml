@@ -1,0 +1,39 @@
+version: 1
+
+# The catalog is built only from official source files/pages. Discovery pages may
+# be crawled only to find official PDFs on the same approved domain.
+sources:
+  - id: moj_1434
+    source_id: ministry_of_justice
+    source_name: وزارة العدل
+    kind: numbered_pdf_series
+    enabled: true
+    url_template: https://www.moj.gov.sa/ar-sa/ministry/versions/Documents/backupFiles3/AhkamGroup_1434/{volume}.pdf
+    volumes: {start: 1, end: 22}
+
+  - id: moj_1435
+    source_id: ministry_of_justice
+    source_name: وزارة العدل
+    kind: numbered_pdf_series
+    enabled: true
+    url_template: https://www.moj.gov.sa/ar-sa/ministry/versions/Documents/backupFiles3/AhkamGroup_1435/{volume}.pdf
+    volumes: {start: 1, end: 14}
+
+  - id: bog_judicial_blogs
+    source_id: board_of_grievances
+    source_name: ديوان المظالم
+    kind: landing_page_crawl
+    enabled: true
+    landing_pages:
+      - https://www.bog.gov.sa/knowledge-center/JudicialBlogs/Pages/JudgmentsDefault.aspx
+    max_depth: 2
+    max_pages: 160
+    allowed_path_prefixes:
+      - /knowledge-center/JudicialBlogs/
+    pdf_only: true
+
+rules:
+  skip_scanned_without_text: true
+  min_case_text_chars: 350
+  max_case_text_chars: 18000
+  request_delay_seconds: 0.35

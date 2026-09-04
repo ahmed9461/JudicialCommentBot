@@ -1,7 +1,7 @@
 version: 1
 auto_accept_score: 90
 candidate_display_count: 3
-search_candidate_limit: 8
+search_candidate_limit: 5
 weights:
   subject_relevance: 40
   legal_issue_clarity: 20

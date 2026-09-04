@@ -1,18 +1,20 @@
-"""Structured commentary generation through the configured DeepSeek Responses API."""
+"""Structured commentary generation through the streamed DeepSeek Responses API."""
 
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-import httpx
-
+from app.deepseek import DeepSeekResponsesClient
 from app.knowledge import SubjectProfile
 from app.research import CaseCandidate
 from app.research.deepseek import extract_output_text
 
 from .models import CommentaryDraft
+
+ProgressCallback = Callable[[str], Awaitable[None]]
 
 
 COMMENTARY_SCHEMA: dict[str, Any] = {
@@ -44,16 +46,22 @@ class DeepSeekCommentaryGenerator:
         api_key: str,
         base_url: str,
         model: str,
-        timeout_seconds: float = 120.0,
+        timeout_seconds: float = 180.0,
+        connect_timeout_seconds: float = 15.0,
+        reasoning_effort: str = "high",
         system_prompt_path: Path | None = None,
     ) -> None:
         if not api_key.strip():
             raise ValueError("DeepSeek API key is required")
         root = Path(__file__).resolve().parents[2]
-        self.api_key = api_key
-        self.base_url = base_url.rstrip("/")
         self.model = model
-        self.timeout_seconds = timeout_seconds
+        self.reasoning_effort = reasoning_effort
+        self.client = DeepSeekResponsesClient(
+            api_key=api_key,
+            base_url=base_url,
+            connect_timeout_seconds=connect_timeout_seconds,
+            idle_timeout_seconds=timeout_seconds,
+        )
         self.system_prompt_path = (
             system_prompt_path or root / "templates" / "commentary_system_prompt.txt"
         )
@@ -65,6 +73,7 @@ class DeepSeekCommentaryGenerator:
         candidate: CaseCandidate,
         judgment_text: str,
         variation_hint: str | None = None,
+        progress: ProgressCallback | None = None,
     ) -> CommentaryDraft:
         instructions = self.system_prompt_path.read_text(encoding="utf-8")
         input_payload = {
@@ -89,6 +98,7 @@ class DeepSeekCommentaryGenerator:
             "model": self.model,
             "instructions": instructions,
             "input": json.dumps(input_payload, ensure_ascii=False),
+            "reasoning": {"effort": self.reasoning_effort},
             "text": {
                 "format": {
                     "type": "json_schema",
@@ -96,18 +106,27 @@ class DeepSeekCommentaryGenerator:
                     "schema": COMMENTARY_SCHEMA,
                 }
             },
-            "max_output_tokens": 10000,
+            "max_output_tokens": 12000,
         }
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(self.timeout_seconds), follow_redirects=True
-        ) as client:
-            response = await client.post(
-                f"{self.base_url}/responses", headers=headers, json=payload
+
+        started_writing = False
+
+        async def on_event(event_type: str, event: dict[str, Any]) -> None:
+            nonlocal started_writing
+            if progress is None:
+                return
+            if event_type == "response.in_progress":
+                await progress("🧠 جاري تحليل وقائع الحكم وتسبيبه وربطه بالمقرر…")
+            elif event_type == "response.output_text.delta" and not started_writing:
+                started_writing = True
+                await progress("✍️ اكتمل التحليل، جاري صياغة التعليق الأكاديمي المنظم…")
+
+        raw = await self.client.create(payload, on_event=on_event if progress else None)
+        if raw.get("status") == "failed":
+            error = raw.get("error") or {}
+            raise ValueError(
+                f"DeepSeek commentary failed: {error.get('code') or 'unknown'} - "
+                f"{error.get('message') or 'no message'}"
             )
-            response.raise_for_status()
-            raw = response.json()
-        return CommentaryDraft.model_validate(json.loads(extract_output_text(raw)))
+        text = extract_output_text(raw)
+        return CommentaryDraft.model_validate(json.loads(text))

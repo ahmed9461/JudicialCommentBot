@@ -2,10 +2,16 @@ from pathlib import Path
 
 import pytest
 
-from app.catalog import CatalogFirstResearchProvider, CatalogResearchProvider, CatalogStore, SubjectSourceMap
+from app.catalog import (
+    CatalogFirstResearchProvider,
+    CatalogNotReadyError,
+    CatalogResearchProvider,
+    CatalogStore,
+    SubjectSourceMap,
+)
 from app.catalog.indexer import OfficialCatalogIndexer
 from app.catalog.models import CatalogCase
-from app.catalog.text import normalize_arabic
+from app.catalog.text import detect_case_number, detect_court_name, normalize_arabic
 from app.db import Database
 from app.knowledge import SubjectLoader
 
@@ -59,6 +65,31 @@ async def test_catalog_search_returns_official_candidate_without_web(tmp_path: P
     assert fallback.called is False
 
 
+@pytest.mark.asyncio
+async def test_empty_catalog_never_spends_web_fallback(tmp_path: Path) -> None:
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'empty.db'}")
+    await db.initialize()
+    store = CatalogStore(db)
+
+    class Fallback:
+        called = False
+
+        async def search_cases(self, *args, **kwargs):
+            self.called = True
+            return []
+
+    fallback = Fallback()
+    provider = CatalogFirstResearchProvider(
+        catalog=CatalogResearchProvider(store),
+        fallback=fallback,
+    )
+    subject = SubjectLoader().get_subject("commercial_law")
+    with pytest.raises(CatalogNotReadyError) as error:
+        await provider.search_cases(subject, excluded_cases=[], limit=5)
+    assert error.value.code == "catalog_not_ready"
+    assert fallback.called is False
+
+
 def test_every_configured_subject_has_official_source_preferences() -> None:
     loader = SubjectLoader()
     source_map = SubjectSourceMap()
@@ -72,3 +103,9 @@ def test_indexer_rejects_toc_like_pages_and_detects_case_starts() -> None:
     first = "رقم القضية: 1111 المحكمة الجزائية الدائرة الأولى الحكم على المتهم " + ("وقائع " * 100)
     second = "رقم الدعوى: 2222 المحكمة العامة الدائرة الثانية الحكم في الدعوى " + ("تسبيب " * 100)
     assert OfficialCatalogIndexer._case_starts([toc, first, "تابع الحكم " * 100, second]) == [1, 3]
+
+
+def test_metadata_detection_supports_committee_decisions() -> None:
+    text = "رقم القرار: 1432-112 اللجنة الفصل في المنازعات والمخالفات التأمينية "
+    assert detect_case_number(text) == "1432-112"
+    assert "لجنة" in (detect_court_name(text) or "")

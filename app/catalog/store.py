@@ -2,12 +2,58 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 import aiosqlite
 
 from app.db import Database
 
 from .models import CatalogCase, CatalogStats
 from .text import normalize_arabic
+
+_CASE_UPSERT_SQL = """
+INSERT INTO official_case_catalog(
+    catalog_key, collection_id, source_id, source_name, source_url,
+    pdf_url, pdf_sha256, page_start, page_end, title, case_number,
+    court_name, judgment_year, extracted_text, normalized_text, indexed_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+ON CONFLICT(catalog_key) DO UPDATE SET
+    collection_id=excluded.collection_id,
+    source_id=excluded.source_id,
+    source_name=excluded.source_name,
+    source_url=excluded.source_url,
+    pdf_url=excluded.pdf_url,
+    pdf_sha256=excluded.pdf_sha256,
+    page_start=excluded.page_start,
+    page_end=excluded.page_end,
+    title=excluded.title,
+    case_number=excluded.case_number,
+    court_name=excluded.court_name,
+    judgment_year=excluded.judgment_year,
+    extracted_text=excluded.extracted_text,
+    normalized_text=excluded.normalized_text,
+    indexed_at=CURRENT_TIMESTAMP
+"""
+
+
+def _case_params(case: CatalogCase) -> tuple[object, ...]:
+    return (
+        case.catalog_key,
+        case.collection_id,
+        case.source_id,
+        case.source_name,
+        case.source_url,
+        case.pdf_url,
+        case.pdf_sha256,
+        case.page_start,
+        case.page_end,
+        case.title,
+        case.case_number,
+        case.court_name,
+        case.judgment_year,
+        case.text,
+        case.normalized_text,
+    )
 
 
 class CatalogStore:
@@ -19,48 +65,41 @@ class CatalogStore:
 
     async def upsert(self, case: CatalogCase) -> None:
         async with self._connect() as db:
-            await db.execute(
-                """
-                INSERT INTO official_case_catalog(
-                    catalog_key, collection_id, source_id, source_name, source_url,
-                    pdf_url, pdf_sha256, page_start, page_end, title, case_number,
-                    court_name, judgment_year, extracted_text, normalized_text,
-                    indexed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(catalog_key) DO UPDATE SET
-                    source_name=excluded.source_name,
-                    source_url=excluded.source_url,
-                    pdf_url=excluded.pdf_url,
-                    pdf_sha256=excluded.pdf_sha256,
-                    page_start=excluded.page_start,
-                    page_end=excluded.page_end,
-                    title=excluded.title,
-                    case_number=excluded.case_number,
-                    court_name=excluded.court_name,
-                    judgment_year=excluded.judgment_year,
-                    extracted_text=excluded.extracted_text,
-                    normalized_text=excluded.normalized_text,
-                    indexed_at=CURRENT_TIMESTAMP
-                """,
-                (
-                    case.catalog_key,
-                    case.collection_id,
-                    case.source_id,
-                    case.source_name,
-                    case.source_url,
-                    case.pdf_url,
-                    case.pdf_sha256,
-                    case.page_start,
-                    case.page_end,
-                    case.title,
-                    case.case_number,
-                    case.court_name,
-                    case.judgment_year,
-                    case.text,
-                    case.normalized_text,
-                ),
-            )
+            await db.execute(_CASE_UPSERT_SQL, _case_params(case))
             await db.commit()
+
+    async def replace_collection(
+        self,
+        collection_id: str,
+        cases: Iterable[CatalogCase],
+    ) -> int:
+        """Atomically replace one indexed source document with a parsed snapshot.
+
+        Parsing happens before this method is called. A crash or malformed PDF can
+        therefore never leave half of a collection committed in the searchable
+        catalog, and a large collection is inserted with one SQLite transaction
+        instead of opening/committing once per judgment.
+        """
+        prepared = list(cases)
+        if any(case.collection_id != collection_id for case in prepared):
+            raise ValueError("All catalog cases must belong to the replaced collection")
+        async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                await db.execute(
+                    "DELETE FROM official_case_catalog WHERE collection_id = ?",
+                    (collection_id,),
+                )
+                if prepared:
+                    await db.executemany(
+                        _CASE_UPSERT_SQL,
+                        [_case_params(case) for case in prepared],
+                    )
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                raise
+        return len(prepared)
 
     async def remove_collection(self, collection_id: str) -> int:
         async with self._connect() as db:

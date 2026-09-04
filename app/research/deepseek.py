@@ -1,4 +1,9 @@
-"""DeepSeek Responses API research provider with bounded server-side web search."""
+"""DeepSeek research provider using a two-stage streamed Responses API flow.
+
+Stage 1 performs bounded web discovery. Stage 2 reuses the returned
+``web_search_call`` items exactly as documented by DeepSeek and produces a small
+structured candidate list without executing another web search.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +17,7 @@ from typing import Any
 import httpx
 from pydantic import ValidationError
 
+from app.deepseek import DeepSeekResponsesClient
 from app.knowledge import SubjectProfile
 
 from .models import CaseCandidate
@@ -51,7 +57,7 @@ CANDIDATE_SCHEMA: dict[str, Any] = {
                     "source_name", "source_url", "pdf_url", "pdf_page_start",
                     "pdf_page_end", "legal_issue", "suitability_reason",
                     "estimated_score", "subject_relevance", "legal_issue_clarity",
-                    "reasoning_quality", "academic_commentary_value"
+                    "reasoning_quality", "academic_commentary_value",
                 ],
                 "additionalProperties": False,
             },
@@ -69,21 +75,29 @@ class DeepSeekResearchProvider:
         api_key: str,
         base_url: str,
         model: str,
-        timeout_seconds: float = 120.0,
+        timeout_seconds: float = 180.0,
+        connect_timeout_seconds: float = 15.0,
         system_prompt_path: Path | None = None,
         request_attempts: int = 1,
-        synthesis_attempts: int = 2,
-        max_search_calls_for_synthesis: int = 8,
+        synthesis_attempts: int = 1,
+        max_search_calls_for_synthesis: int = 6,
+        discovery_reasoning_effort: str = "none",
+        synthesis_reasoning_effort: str = "low",
     ) -> None:
         if not api_key.strip():
             raise ValueError("DeepSeek API key is required")
-        self.api_key = api_key
-        self.base_url = base_url.rstrip("/")
         self.model = model
-        self.timeout_seconds = timeout_seconds
         self.request_attempts = max(1, int(request_attempts))
         self.synthesis_attempts = max(1, int(synthesis_attempts))
         self.max_search_calls_for_synthesis = max(1, int(max_search_calls_for_synthesis))
+        self.discovery_reasoning_effort = discovery_reasoning_effort
+        self.synthesis_reasoning_effort = synthesis_reasoning_effort
+        self.client = DeepSeekResponsesClient(
+            api_key=api_key,
+            base_url=base_url,
+            connect_timeout_seconds=connect_timeout_seconds,
+            idle_timeout_seconds=timeout_seconds,
+        )
         root = Path(__file__).resolve().parents[2]
         self.system_prompt_path = (
             system_prompt_path or root / "templates" / "search_system_prompt.txt"
@@ -102,90 +116,89 @@ class DeepSeekResearchProvider:
         last_error: Exception | None = None
 
         for research_attempt in range(1, self.request_attempts + 1):
-            if research_attempt == 1:
-                await _notify(progress, "🌐 جاري تنفيذ بحث ويب محدود في المصادر القضائية…")
-            else:
+            try:
                 await _notify(
                     progress,
-                    f"🔄 تعذر الاستفادة من البحث السابق، محاولة أخيرة {research_attempt}/{self.request_attempts}…",
+                    "🌐 جاري البحث في المصادر القضائية عبر DeepSeek…",
                 )
-            try:
-                raw = await self._post(self._search_payload(instructions, user_input))
-                _log_response_metrics("search", raw)
-                search_calls = extract_web_search_calls(raw)
-                text = _try_extract_output_text(raw)
-
-                if text:
-                    try:
-                        candidates, recovered_partial = parse_candidate_response(text, limit=limit)
-                        await _report_parse_result(progress, candidates, recovered_partial)
-                        return candidates
-                    except (ValueError, json.JSONDecodeError, ValidationError) as exc:
-                        last_error = exc
-                        logger.warning(
-                            "DeepSeek web result contained malformed structured text; will synthesize from the same search results without re-searching: %s",
-                            exc,
+                discovery = await self.client.create(
+                    self._discovery_payload(instructions, user_input),
+                    on_event=self._stream_progress(progress, phase="discovery"),
+                )
+                _log_response_metrics("discovery", discovery)
+                search_calls = extract_web_search_calls(discovery)
+                if not search_calls:
+                    # Defensive fallback for a model that returned structured text directly.
+                    direct_text = _try_extract_output_text(discovery)
+                    if direct_text:
+                        candidates, recovered_partial = parse_candidate_response(
+                            direct_text, limit=limit
                         )
-
-                if search_calls:
-                    bounded_calls = search_calls[-self.max_search_calls_for_synthesis :]
-                    logger.info(
-                        "DeepSeek web phase produced %d action(s); synthesizing from latest %d without new web search",
-                        len(search_calls),
-                        len(bounded_calls),
-                    )
-                    await _notify(
-                        progress,
-                        f"🔎 اكتمل البحث ({len(search_calls)} خطوة). جاري تلخيص أفضل النتائج دون تنفيذ بحث جديد…",
-                    )
-                    for synthesis_attempt in range(1, self.synthesis_attempts + 1):
-                        compact_limit = min(limit, 5 if synthesis_attempt == 1 else 3)
-                        synthesis = await self._post(
-                            self._continuation_payload(
-                                instructions=instructions,
-                                user_input=user_input,
-                                search_calls=bounded_calls,
-                                limit=compact_limit,
-                                stricter=synthesis_attempt > 1,
-                            )
-                        )
-                        _log_response_metrics(f"synthesis-{synthesis_attempt}", synthesis)
-                        synthesis_text = _try_extract_output_text(synthesis)
-                        if not synthesis_text:
-                            last_error = ValueError(describe_empty_response(synthesis))
-                            logger.warning(
-                                "DeepSeek synthesis %d/%d returned no output text: %s",
-                                synthesis_attempt,
-                                self.synthesis_attempts,
-                                last_error,
-                            )
-                            continue
-                        try:
-                            candidates, recovered_partial = parse_candidate_response(
-                                synthesis_text, limit=limit
-                            )
+                        if candidates:
                             await _report_parse_result(progress, candidates, recovered_partial)
                             return candidates
-                        except (ValueError, json.JSONDecodeError, ValidationError) as exc:
-                            last_error = exc
-                            logger.warning(
-                                "DeepSeek synthesis %d/%d returned malformed JSON; retrying synthesis only, not web search: %s",
-                                synthesis_attempt,
-                                self.synthesis_attempts,
-                                exc,
+                    raise ValueError(
+                        "DeepSeek discovery completed without web_search_call results"
+                    )
+
+                bounded_calls = search_calls[: self.max_search_calls_for_synthesis]
+                await _notify(
+                    progress,
+                    f"🔎 اكتمل جمع المصادر ({len(search_calls)} خطوة بحث). "
+                    f"جاري تحليل أفضل {len(bounded_calls)} نتائج دون بحث ويب إضافي…",
+                )
+                logger.info(
+                    "DeepSeek discovery produced %d web action(s); reusing %d for synthesis",
+                    len(search_calls),
+                    len(bounded_calls),
+                )
+
+                for synthesis_attempt in range(1, self.synthesis_attempts + 1):
+                    synthesis = await self.client.create(
+                        self._synthesis_payload(
+                            instructions=instructions,
+                            user_input=user_input,
+                            search_calls=bounded_calls,
+                            limit=min(limit, 5),
+                            stricter=synthesis_attempt > 1,
+                        ),
+                        on_event=self._stream_progress(progress, phase="synthesis"),
+                    )
+                    _log_response_metrics(f"synthesis-{synthesis_attempt}", synthesis)
+                    text = _try_extract_output_text(synthesis)
+                    if not text:
+                        last_error = ValueError(describe_empty_response(synthesis))
+                        continue
+                    try:
+                        candidates, recovered_partial = parse_candidate_response(
+                            text, limit=limit
+                        )
+                    except (json.JSONDecodeError, ValidationError, ValueError) as exc:
+                        last_error = exc
+                        if synthesis_attempt < self.synthesis_attempts:
+                            await _notify(
+                                progress,
+                                "🧩 النتيجة المنظمة غير مكتملة؛ جاري إعادة تنظيم نفس نتائج البحث فقط…",
                             )
-                            if synthesis_attempt < self.synthesis_attempts:
-                                await _notify(
-                                    progress,
-                                    "🧩 صيغة النتائج غير مكتملة؛ جاري إصلاحها من نفس نتائج البحث دون تكلفة بحث ويب جديدة…",
-                                )
-                elif not text:
-                    last_error = ValueError(describe_empty_response(raw))
+                            continue
+                        raise
+                    if not candidates:
+                        raise ValueError("DeepSeek synthesis returned zero valid candidates")
+                    await _report_parse_result(progress, candidates, recovered_partial)
+                    return candidates
 
             except httpx.RequestError as exc:
                 last_error = exc
                 logger.warning(
-                    "DeepSeek HTTP research attempt %d/%d failed: %s",
+                    "DeepSeek research transport attempt %d/%d failed: %s",
+                    research_attempt,
+                    self.request_attempts,
+                    exc,
+                )
+            except (ValueError, json.JSONDecodeError, ValidationError) as exc:
+                last_error = exc
+                logger.warning(
+                    "DeepSeek research attempt %d/%d produced no usable result: %s",
                     research_attempt,
                     self.request_attempts,
                     exc,
@@ -198,24 +211,26 @@ class DeepSeekResearchProvider:
             f"DeepSeek research failed after {self.request_attempts} web attempt(s): {last_error}"
         )
 
-    def _search_payload(self, instructions: str, user_input: str) -> dict[str, Any]:
+    def _discovery_payload(self, instructions: str, user_input: str) -> dict[str, Any]:
+        # Discovery has one responsibility: search. We deliberately do not request
+        # structured legal output in the same turn, and disable reasoning because
+        # DeepSeek defaults to high reasoning effort otherwise.
         return {
             "model": self.model,
-            "instructions": instructions,
+            "instructions": (
+                instructions
+                + "\nفي هذه المرحلة نفّذ البحث فقط. استخدم أقل عدد ممكن من عمليات البحث، "
+                "وركّز على المصادر الرسمية والروابط المباشرة للأحكام. لا تكتب تحليلاً مطولاً."
+            ),
             "input": user_input,
             "tools": [{"type": "web_search"}],
             "tool_choice": {"type": "web_search"},
-            "text": {
-                "format": {
-                    "type": "json_schema",
-                    "name": "judicial_case_candidates",
-                    "schema": CANDIDATE_SCHEMA,
-                }
-            },
-            "max_output_tokens": 6000,
+            "reasoning": {"effort": self.discovery_reasoning_effort},
+            "text": {"format": {"type": "text"}},
+            "max_output_tokens": 1200,
         }
 
-    def _continuation_payload(
+    def _synthesis_payload(
         self,
         *,
         instructions: str,
@@ -225,9 +240,9 @@ class DeepSeekResearchProvider:
         stricter: bool,
     ) -> dict[str, Any]:
         compact_note = (
-            "هذه محاولة إصلاح ثانية: أعد أفضل النتائج فقط، واختصر كل حقل نصي، ولا تكتب أي شيء خارج JSON."
+            "هذه محاولة إعادة تنظيم: اجعل النصوص شديدة الاختصار ولا تكتب أي شيء خارج JSON."
             if stricter
-            else "اختصر الحقول النصية حتى لا تنقطع الاستجابة."
+            else "اجعل الحقول النصية موجزة ودقيقة."
         )
         continuation_input: list[dict[str, Any]] = [
             {"role": "user", "content": user_input},
@@ -235,9 +250,10 @@ class DeepSeekResearchProvider:
             {
                 "role": "user",
                 "content": (
-                    "استخدم نتائج البحث المنفذة أعلاه فقط. ممنوع تنفيذ بحث جديد. "
-                    f"أخرج JSON مطابقاً للمخطط وفيه أفضل {limit} مرشحين كحد أقصى. "
-                    "استخدم null لأي معلومة غير متحققة ولا تخترع شيئاً. "
+                    "اعتمد حصراً على نتائج web_search_call المرفقة أعلاه. "
+                    "ممنوع تنفيذ بحث جديد. "
+                    f"أخرج أفضل {limit} قضايا كحد أقصى وفق المخطط. "
+                    "استخدم null لأي معلومة غير متحققة، ولا تخترع رقم قضية أو محكمة أو رابط PDF. "
                     f"{compact_note}"
                 ),
             },
@@ -246,6 +262,7 @@ class DeepSeekResearchProvider:
             "model": self.model,
             "instructions": instructions,
             "input": continuation_input,
+            "reasoning": {"effort": self.synthesis_reasoning_effort},
             "text": {
                 "format": {
                     "type": "json_schema",
@@ -253,36 +270,35 @@ class DeepSeekResearchProvider:
                     "schema": CANDIDATE_SCHEMA,
                 }
             },
-            "max_output_tokens": 5000 if not stricter else 3500,
+            "max_output_tokens": 6000 if not stricter else 4500,
         }
 
-    async def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        timeout = httpx.Timeout(
-            self.timeout_seconds,
-            connect=min(15.0, self.timeout_seconds),
-        )
-        try:
-            async with asyncio.timeout(self.timeout_seconds):
-                async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-                    response = await client.post(
-                        f"{self.base_url}/responses", headers=headers, json=payload
+    def _stream_progress(
+        self,
+        progress: ResearchProgressCallback | None,
+        *,
+        phase: str,
+    ) -> Callable[[str, dict[str, Any]], Awaitable[None]] | None:
+        if progress is None:
+            return None
+        completed_searches = 0
+
+        async def on_event(event_type: str, event: dict[str, Any]) -> None:
+            nonlocal completed_searches
+            if phase == "discovery":
+                if event_type == "response.web_search_call.searching":
+                    await _notify(progress, "🔍 DeepSeek يبحث الآن في المصادر القضائية…")
+                elif event_type == "response.web_search_call.completed":
+                    completed_searches += 1
+                    await _notify(
+                        progress,
+                        f"✅ اكتملت خطوة بحث رقم {completed_searches}. جاري متابعة جمع المصادر…",
                     )
-                    response.raise_for_status()
-                    raw = response.json()
-        except TimeoutError as exc:
-            raise httpx.ReadTimeout(
-                f"DeepSeek request exceeded {self.timeout_seconds:.0f}s wall-clock limit"
-            ) from exc
-        if raw.get("status") == "failed":
-            error = raw.get("error") or {}
-            raise ValueError(
-                f"DeepSeek response failed: {error.get('code') or 'unknown'} - {error.get('message') or 'no message'}"
-            )
-        return raw
+            elif phase == "synthesis" and event_type == "response.output_text.delta":
+                # The StatusTicker keeps counting; avoid an edit for every token.
+                return
+
+        return on_event
 
 
 def parse_candidate_response(text: str, *, limit: int) -> tuple[list[CaseCandidate], bool]:
@@ -393,11 +409,11 @@ def extract_output_text(payload: dict[str, Any]) -> str:
 
 
 def extract_web_search_calls(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    calls: list[dict[str, Any]] = []
-    for item in payload.get("output") or []:
-        if isinstance(item, dict) and item.get("type") == "web_search_call":
-            calls.append(dict(item))
-    return calls
+    return [
+        dict(item)
+        for item in (payload.get("output") or [])
+        if isinstance(item, dict) and item.get("type") == "web_search_call"
+    ]
 
 
 def describe_empty_response(payload: dict[str, Any]) -> str:
@@ -420,13 +436,15 @@ def describe_empty_response(payload: dict[str, Any]) -> str:
 
 def _log_response_metrics(label: str, payload: dict[str, Any]) -> None:
     usage = payload.get("usage") or {}
+    details = usage.get("output_tokens_details") or {}
     logger.info(
-        "DeepSeek %s status=%s web_calls=%d tokens(in=%s,out=%s,total=%s)",
+        "DeepSeek %s status=%s web_calls=%d tokens(in=%s,out=%s,reasoning=%s,total=%s)",
         label,
         payload.get("status") or "unknown",
         len(extract_web_search_calls(payload)),
         usage.get("input_tokens", "?"),
         usage.get("output_tokens", "?"),
+        details.get("reasoning_tokens", "?"),
         usage.get("total_tokens", "?"),
     )
 
@@ -443,7 +461,7 @@ async def _report_parse_result(
         )
         await _notify(
             progress,
-            f"🧩 استعدت {len(candidates)} قضية كاملة من استجابة غير مكتملة. جاري التحقق من المصادر…",
+            f"🧩 تم استعادة {len(candidates)} قضية كاملة من نتيجة منقطعة. جاري التحقق من المصادر…",
         )
     else:
         await _notify(

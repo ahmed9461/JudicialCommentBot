@@ -15,7 +15,6 @@ from app.sources import SourceRegistry
 class FakeProvider:
     def __init__(self, candidates):
         self.candidates = candidates
-
     async def search_cases(self, subject, *, excluded_cases, limit):
         return self.candidates[:limit]
 
@@ -24,7 +23,6 @@ class FakePdfService:
     def __init__(self, tmp_path: Path):
         self.tmp_path = tmp_path
         self.calls = 0
-
     async def acquire(self, url: str, *, suggested_name: str = "case"):
         self.calls += 1
         if self.calls == 1:
@@ -50,14 +48,9 @@ async def test_workflow_skips_failed_pdf_and_uses_next_candidate(tmp_path: Path,
     db = Database(f"sqlite+aiosqlite:///{tmp_path / 'app.db'}")
     await db.initialize()
     pdf = FakePdfService(tmp_path)
-    settings = Settings(
-        telegram_bot_token="123456:fixture", owner_telegram_id=1,
-        temp_dir=str(tmp_path), candidate_display_count=1, search_retry_rounds=1,
-        search_candidate_limit=2, commentary_min_text_chars=10,
-    )
+    settings = Settings(telegram_bot_token="123456:fixture", owner_telegram_id=1, temp_dir=str(tmp_path), candidate_display_count=1, search_retry_rounds=1, search_candidate_limit=2, commentary_min_text_chars=10)
     monkeypatch.setattr("app.services.case_workflow.verify_case_number_in_pdf", lambda path, number: True)
     monkeypatch.setattr("app.services.case_workflow.extract_pdf_text", lambda path, max_chars: "نص الحكم القضائي " * 20)
-
     service = CaseWorkflowService(
         database=db, subject_loader=SubjectLoader(), research_provider=FakeProvider([candidate("111", 95), candidate("222", 94)]),
         source_registry=SourceRegistry(), pdf_service=pdf, scoring=ScoringPolicy(), settings=settings,
@@ -65,4 +58,14 @@ async def test_workflow_skips_failed_pdf_and_uses_next_candidate(tmp_path: Path,
     batch = await service.prepare(1, "law_intro")
     assert pdf.calls == 2
     assert batch.cases[0].candidate.case_number == "222"
-    service.cleanup_user(1)
+    await service.cleanup_user(1)
+
+
+@pytest.mark.asyncio
+async def test_reservation_blocks_same_case_for_another_session(tmp_path: Path) -> None:
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'reservation.db'}")
+    await db.initialize()
+    assert await db.reserve_case("one", case_number="55", court_name="محكمة", pdf_sha256="d" * 64)
+    assert not await db.reserve_case("two", case_number="55", court_name="محكمة", pdf_sha256="e" * 64)
+    await db.release_reservation("one")
+    assert await db.reserve_case("two", case_number="55", court_name="محكمة", pdf_sha256="e" * 64)

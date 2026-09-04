@@ -55,4 +55,23 @@ MIGRATIONS: dict[int, str] = {
     );
     CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at);
     """,
+    3: """
+    ALTER TABLE case_history ADD COLUMN artifact_kind TEXT;
+    ALTER TABLE case_history ADD COLUMN source_page_start INTEGER;
+    ALTER TABLE case_history ADD COLUMN source_page_end INTEGER;
+
+    CREATE TABLE IF NOT EXISTS case_reservations (
+        token TEXT PRIMARY KEY,
+        case_number TEXT,
+        court_name TEXT,
+        pdf_sha256 TEXT NOT NULL,
+        reserved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_case_reservation_sha
+        ON case_reservations(pdf_sha256);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_case_reservation_case_court
+        ON case_reservations(LOWER(TRIM(case_number)), LOWER(TRIM(court_name)))
+        WHERE case_number IS NOT NULL AND case_number <> ''
+          AND court_name IS NOT NULL AND court_name <> '';
+    """,
 }

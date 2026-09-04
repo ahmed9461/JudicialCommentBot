@@ -1,4 +1,4 @@
-"""End-to-end case discovery, PDF verification, deduplication and selection."""
+"""End-to-end case discovery, PDF verification, reservation, deduplication and selection."""
 
 from __future__ import annotations
 
@@ -34,6 +34,9 @@ class PreparedCase:
     artifact: PdfArtifact
     judgment_text: str
     score: ScoreResult
+    artifact_kind: str = "official_pdf"
+    source_page_start: int | None = None
+    source_page_end: int | None = None
 
     @property
     def final_score(self) -> int:
@@ -78,17 +81,22 @@ class CaseWorkflowService:
 
     async def prepare(self, user_id: int, subject_slug: str) -> PreparedBatch:
         async with self._lock(user_id):
-            self._cleanup_session_files(user_id)
+            await self._cleanup_session(user_id)
             subject = self.subject_loader.get_subject(subject_slug)
             dynamic_exclusions = list(await self.database.used_cases_for_subject(subject_slug))
             verified: list[PreparedCase] = []
             seen_identity: set[tuple[str, ...]] = set()
 
             for _round in range(max(1, self.settings.search_retry_rounds)):
-                candidates = await self.research_provider.search_cases(
-                    subject, excluded_cases=dynamic_exclusions,
-                    limit=self.settings.search_candidate_limit,
-                )
+                try:
+                    candidates = await self.research_provider.search_cases(
+                        subject, excluded_cases=dynamic_exclusions,
+                        limit=self.settings.search_candidate_limit,
+                    )
+                except Exception:
+                    if verified:
+                        break
+                    raise
                 if not candidates:
                     break
                 for candidate in candidates:
@@ -98,11 +106,9 @@ class CaseWorkflowService:
                     seen_identity.add(identity)
                     prepared = await self._verify_candidate(candidate)
                     if prepared is None:
-                        dynamic_exclusions.append({
-                            "case_number": candidate.case_number,
-                            "court_name": candidate.court_name,
-                            "source_url": candidate.source_url_str,
-                        })
+                        dynamic_exclusions.append({"case_number": candidate.case_number,
+                                                   "court_name": candidate.court_name,
+                                                   "source_url": candidate.source_url_str})
                         continue
                     verified.append(prepared)
                 if len(verified) >= self.settings.candidate_display_count:
@@ -119,9 +125,9 @@ class CaseWorkflowService:
                 require_margin=self.scoring.require_score_margin,
             )
             session = WorkflowSession(subject_slug=subject_slug, cases={item.token: item for item in verified})
-            if decision.is_auto and decision.selected_index is not None:
-                session.selected_token = verified[decision.selected_index].token
             self._sessions[user_id] = session
+            if decision.is_auto and decision.selected_index is not None:
+                await self._select_session_case(session, verified[decision.selected_index].token)
             return PreparedBatch(decision=decision, cases=tuple(verified[:decision.visible_count]))
 
     async def _verify_candidate(self, candidate: CaseCandidate) -> PreparedCase | None:
@@ -129,52 +135,59 @@ class CaseWorkflowService:
         if not pdf_url and self.source_registry.can_be_original_pdf_source(candidate.source_url_str):
             pdf_url = candidate.source_url_str
         if not pdf_url or not self.source_registry.can_be_original_pdf_source(pdf_url):
-            logger.info("Candidate rejected: no approved official PDF url title=%r", candidate.title)
             return None
 
         artifact: PdfArtifact | None = None
+        artifact_kind = "official_pdf"
+        start_page: int | None = None
+        end_page: int | None = None
+        token = secrets.token_urlsafe(9)
         try:
             artifact = await self.pdf_service.acquire(pdf_url, suggested_name=candidate.case_number or candidate.title)
             if artifact.page_count > self.settings.compilation_page_threshold:
                 if not candidate.case_number:
                     raise PdfValidationError("Large compilation requires a case number for identity verification")
                 if candidate.has_page_range:
-                    start, end = candidate.pdf_page_start, candidate.pdf_page_end
-                    assert start is not None and end is not None
+                    start_page, end_page = candidate.pdf_page_start, candidate.pdf_page_end
+                    assert start_page is not None and end_page is not None
                 else:
-                    start, end = locate_case_page_range(artifact.path, candidate.case_number)
-                artifact = self._extract_compilation_case(artifact, candidate, start, end)
+                    start_page, end_page = locate_case_page_range(artifact.path, candidate.case_number)
+                artifact = self._extract_compilation_case(artifact, candidate, start_page, end_page)
+                artifact_kind = "official_compilation_extract"
             elif candidate.has_page_range:
                 if not candidate.case_number:
                     raise PdfValidationError("Page-range extraction requires a case number")
                 assert candidate.pdf_page_start is not None and candidate.pdf_page_end is not None
-                artifact = self._extract_compilation_case(
-                    artifact, candidate, candidate.pdf_page_start, candidate.pdf_page_end
-                )
+                start_page, end_page = candidate.pdf_page_start, candidate.pdf_page_end
+                artifact = self._extract_compilation_case(artifact, candidate, start_page, end_page)
+                artifact_kind = "official_compilation_extract"
 
             if candidate.case_number and not verify_case_number_in_pdf(artifact.path, candidate.case_number):
                 raise PdfValidationError("Verified PDF does not contain the claimed case number")
-
-            if await self.database.is_case_used(
-                case_number=candidate.case_number, court_name=candidate.court_name,
-                pdf_sha256=artifact.sha256,
-            ):
+            if await self.database.is_case_used(case_number=candidate.case_number, court_name=candidate.court_name, pdf_sha256=artifact.sha256):
                 artifact.path.unlink(missing_ok=True)
                 return None
 
             text = extract_pdf_text(artifact.path, max_chars=self.settings.commentary_input_max_chars)
             if len(text) < self.settings.commentary_min_text_chars:
                 raise PdfValidationError("Judgment PDF contains too little extractable text")
-
             score = self.scoring.score(candidate, pdf_is_official=self.source_registry.classify(artifact.source_url).is_official)
+            if not await self.database.reserve_case(
+                token, case_number=candidate.case_number, court_name=candidate.court_name,
+                pdf_sha256=artifact.sha256,
+            ):
+                artifact.path.unlink(missing_ok=True)
+                return None
             return PreparedCase(
-                token=secrets.token_urlsafe(9), candidate=candidate, artifact=artifact,
-                judgment_text=text, score=score,
+                token=token, candidate=candidate, artifact=artifact, judgment_text=text,
+                score=score, artifact_kind=artifact_kind, source_page_start=start_page,
+                source_page_end=end_page,
             )
         except (PdfAcquisitionError, OSError, ValueError) as exc:
             logger.info("Candidate PDF rejected title=%r reason=%s", candidate.title, exc)
             if artifact is not None:
                 artifact.path.unlink(missing_ok=True)
+            await self.database.release_reservation(token)
             return None
 
     def _extract_compilation_case(self, artifact: PdfArtifact, candidate: CaseCandidate,
@@ -187,10 +200,8 @@ class CaseWorkflowService:
             raise PdfValidationError("Extracted compilation pages do not match the case number")
         page_count = validate_pdf_file(output, max_pages=self.settings.pdf_max_pages)
         digest = hashlib.sha256(output.read_bytes()).hexdigest()
-        return PdfArtifact(
-            path=output, source_url=artifact.source_url, sha256=digest,
-            size_bytes=output.stat().st_size, page_count=page_count,
-        )
+        return PdfArtifact(path=output, source_url=artifact.source_url, sha256=digest,
+                           size_bytes=output.stat().st_size, page_count=page_count)
 
     @staticmethod
     def _candidate_identity(candidate: CaseCandidate) -> tuple[str, ...]:
@@ -198,12 +209,21 @@ class CaseWorkflowService:
             return ("case", candidate.case_number.strip().casefold(), candidate.court_name.strip().casefold())
         return ("url", candidate.source_url_str)
 
-    def select(self, user_id: int, token: str) -> PreparedCase:
+    async def select(self, user_id: int, token: str) -> PreparedCase:
         session = self._sessions.get(user_id)
         if session is None or token not in session.cases:
             raise KeyError("Candidate session expired")
-        session.selected_token = token
+        await self._select_session_case(session, token)
         return session.cases[token]
+
+    async def _select_session_case(self, session: WorkflowSession, token: str) -> None:
+        selected = session.cases[token]
+        discarded = [key for key in session.cases if key != token]
+        for key in discarded:
+            session.cases[key].artifact.path.unlink(missing_ok=True)
+        await self.database.release_reservations(discarded)
+        session.cases = {token: selected}
+        session.selected_token = token
 
     def selected(self, user_id: int) -> PreparedCase:
         session = self._sessions.get(user_id)
@@ -227,25 +247,28 @@ class CaseWorkflowService:
                 subject_slug=session.subject_slug, case_number=selected.candidate.case_number,
                 court_name=selected.candidate.court_name, source_name=selected.candidate.source_name,
                 source_url=selected.artifact.source_url, pdf_sha256=selected.artifact.sha256,
-                suitability_score=selected.final_score,
+                suitability_score=selected.final_score, artifact_kind=selected.artifact_kind,
+                source_page_start=selected.source_page_start, source_page_end=selected.source_page_end,
             )
             await self.database.add_audit(
                 "assignment_sent", subject_slug=session.subject_slug,
-                case_number=selected.candidate.case_number, details=f"score={selected.final_score}",
+                case_number=selected.candidate.case_number,
+                details=f"score={selected.final_score};artifact={selected.artifact_kind}",
             )
             session.recorded = True
+        await self.database.release_reservation(selected.token)
         if self.settings.delete_files_after_send:
-            for item in session.cases.values():
-                item.artifact.path.unlink(missing_ok=True)
-        session.cases = {selected.token: selected}
+            selected.artifact.path.unlink(missing_ok=True)
 
-    def cleanup_user(self, user_id: int) -> None:
-        self._cleanup_session_files(user_id)
-        self._sessions.pop(user_id, None)
+    async def cleanup_user(self, user_id: int) -> None:
+        async with self._lock(user_id):
+            await self._cleanup_session(user_id)
 
-    def _cleanup_session_files(self, user_id: int) -> None:
-        session = self._sessions.get(user_id)
+    async def _cleanup_session(self, user_id: int) -> None:
+        session = self._sessions.pop(user_id, None)
         if not session:
             return
+        tokens = list(session.cases)
         for item in session.cases.values():
             item.artifact.path.unlink(missing_ok=True)
+        await self.database.release_reservations(tokens)

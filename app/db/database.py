@@ -33,9 +33,7 @@ class Database:
             await db.execute("PRAGMA foreign_keys = ON")
             if self.path != ":memory:":
                 await db.execute("PRAGMA journal_mode = WAL")
-            await db.execute(
-                "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
-            )
+            await db.execute("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)")
             await db.commit()
             cursor = await db.execute("SELECT COALESCE(MAX(version), 0) FROM schema_migrations")
             current = int((await cursor.fetchone())[0])
@@ -74,10 +72,7 @@ class Database:
                 "SELECT case_number, court_name, source_url FROM case_history WHERE subject_slug = ? ORDER BY used_at DESC LIMIT 200",
                 (subject_slug,),
             )
-            return [
-                {"case_number": row[0], "court_name": row[1], "source_url": row[2]}
-                for row in await cursor.fetchall()
-            ]
+            return [{"case_number": row[0], "court_name": row[1], "source_url": row[2]} for row in await cursor.fetchall()]
 
     async def is_case_used(self, *, case_number: str | None, court_name: str | None, pdf_sha256: str | None) -> bool:
         clauses: list[str] = []
@@ -94,36 +89,72 @@ class Database:
             cursor = await db.execute(f"SELECT 1 FROM case_history WHERE {' OR '.join(clauses)} LIMIT 1", params)
             return await cursor.fetchone() is not None
 
-    async def record_case(self, *, subject_slug: str, case_number: str | None, court_name: str | None, source_name: str | None, source_url: str | None, pdf_sha256: str, suitability_score: int) -> bool:
+    async def reserve_case(self, token: str, *, case_number: str | None, court_name: str | None,
+                           pdf_sha256: str, ttl_minutes: int = 30) -> bool:
+        async with self._connect() as db:
+            await db.execute(
+                "DELETE FROM case_reservations WHERE reserved_at < datetime('now', ?)",
+                (f"-{max(1, ttl_minutes)} minutes",),
+            )
+            try:
+                cursor = await db.execute(
+                    "INSERT INTO case_reservations(token, case_number, court_name, pdf_sha256) VALUES (?, ?, ?, ?)",
+                    (token, case_number, court_name, pdf_sha256),
+                )
+                await db.commit()
+                return cursor.rowcount > 0
+            except aiosqlite.IntegrityError:
+                await db.rollback()
+                return False
+
+    async def release_reservation(self, token: str) -> None:
+        async with self._connect() as db:
+            await db.execute("DELETE FROM case_reservations WHERE token = ?", (token,))
+            await db.commit()
+
+    async def release_reservations(self, tokens: list[str]) -> None:
+        if not tokens:
+            return
+        placeholders = ",".join("?" for _ in tokens)
+        async with self._connect() as db:
+            await db.execute(f"DELETE FROM case_reservations WHERE token IN ({placeholders})", tokens)
+            await db.commit()
+
+    async def record_case(self, *, subject_slug: str, case_number: str | None, court_name: str | None,
+                          source_name: str | None, source_url: str | None, pdf_sha256: str,
+                          suitability_score: int, artifact_kind: str = "official_pdf",
+                          source_page_start: int | None = None, source_page_end: int | None = None) -> bool:
         async with self._connect() as db:
             cursor = await db.execute(
-                """INSERT OR IGNORE INTO case_history(subject_slug, case_number, court_name, source_name, source_url, pdf_sha256, suitability_score)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (subject_slug, case_number, court_name, source_name, source_url, pdf_sha256, suitability_score),
+                """INSERT OR IGNORE INTO case_history(
+                       subject_slug, case_number, court_name, source_name, source_url, pdf_sha256,
+                       suitability_score, artifact_kind, source_page_start, source_page_end
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (subject_slug, case_number, court_name, source_name, source_url, pdf_sha256,
+                 suitability_score, artifact_kind, source_page_start, source_page_end),
             )
             await db.commit()
             return cursor.rowcount > 0
 
-    async def add_audit(self, event_type: str, *, subject_slug: str | None = None, case_number: str | None = None, details: str | None = None) -> None:
+    async def add_audit(self, event_type: str, *, subject_slug: str | None = None,
+                        case_number: str | None = None, details: str | None = None) -> None:
         async with self._connect() as db:
-            await db.execute(
-                "INSERT INTO audit_log(event_type, subject_slug, case_number, details) VALUES (?, ?, ?, ?)",
-                (event_type, subject_slug, case_number, details),
-            )
+            await db.execute("INSERT INTO audit_log(event_type, subject_slug, case_number, details) VALUES (?, ?, ?, ?)",
+                             (event_type, subject_slug, case_number, details))
             await db.commit()
 
     async def recent_history(self, limit: int = 20) -> list[dict[str, object]]:
         async with self._connect() as db:
             cursor = await db.execute(
-                """SELECT subject_slug, case_number, court_name, source_name, source_url, suitability_score, used_at
+                """SELECT subject_slug, case_number, court_name, source_name, source_url,
+                          suitability_score, used_at, artifact_kind, source_page_start, source_page_end
                    FROM case_history ORDER BY used_at DESC LIMIT ?""",
                 (max(1, min(limit, 100)),),
             )
-            rows = await cursor.fetchall()
             return [
-                {
-                    "subject_slug": row[0], "case_number": row[1], "court_name": row[2],
-                    "source_name": row[3], "source_url": row[4], "suitability_score": row[5], "used_at": row[6]
-                }
-                for row in rows
+                {"subject_slug": row[0], "case_number": row[1], "court_name": row[2],
+                 "source_name": row[3], "source_url": row[4], "suitability_score": row[5],
+                 "used_at": row[6], "artifact_kind": row[7], "source_page_start": row[8],
+                 "source_page_end": row[9]}
+                for row in await cursor.fetchall()
             ]

@@ -50,7 +50,7 @@ async def run() -> None:
             api_key=api_key,
             base_url=settings.deepseek_base_url,
             model=settings.deepseek_research_model,
-            timeout_seconds=settings.deepseek_request_timeout_seconds,
+            timeout_seconds=settings.deepseek_research_timeout_seconds,
             request_attempts=settings.deepseek_research_attempts,
             synthesis_attempts=settings.deepseek_synthesis_attempts,
             max_search_calls_for_synthesis=settings.deepseek_max_search_calls_for_synthesis,
@@ -59,7 +59,7 @@ async def run() -> None:
             api_key=api_key,
             base_url=settings.deepseek_base_url,
             model=settings.deepseek_commentary_model,
-            timeout_seconds=settings.deepseek_request_timeout_seconds,
+            timeout_seconds=settings.deepseek_commentary_timeout_seconds,
         )
         pdf_service = PdfAcquisitionService(
             source_registry=source_registry,

@@ -101,4 +101,15 @@ MIGRATIONS: dict[int, str] = {
     CREATE INDEX IF NOT EXISTS idx_catalog_case_number ON official_case_catalog(case_number);
     CREATE INDEX IF NOT EXISTS idx_catalog_year ON official_case_catalog(judgment_year);
     """,
+    5: """
+    CREATE TABLE IF NOT EXISTS catalog_documents (
+        source_url TEXT PRIMARY KEY,
+        collection_id TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        pdf_sha256 TEXT,
+        case_count INTEGER NOT NULL DEFAULT 0,
+        indexed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_catalog_documents_source ON catalog_documents(source_id);
+    """,
 }

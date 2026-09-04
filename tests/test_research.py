@@ -126,17 +126,21 @@ async def test_malformed_synthesis_does_not_repeat_paid_web_search(monkeypatch) 
         },
     ]
 
-    async def fake_post(payload: dict) -> dict:
+    async def fake_create(payload: dict, *, on_event=None) -> dict:
         payloads.append(payload)
         return replies.pop(0)
 
-    monkeypatch.setattr(provider, "_post", fake_post)
+    monkeypatch.setattr(provider.client, "create", fake_create)
     subject = SubjectLoader().get_subject("constitutional_law")
     result = await provider.search_cases(subject, excluded_cases=[], limit=5)
 
     assert [item.case_number for item in result] == ["333"]
     assert len(payloads) == 3
     assert sum(1 for payload in payloads if payload.get("tools")) == 1
+    assert payloads[0]["reasoning"]["effort"] == "none"
+    assert payloads[1]["reasoning"]["effort"] == "low"
+    assert "tools" not in payloads[1]
+    assert "tools" not in payloads[2]
 
 
 def test_search_prompt_uses_subject_knowledge_and_exclusions() -> None:

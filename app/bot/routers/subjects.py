@@ -10,10 +10,12 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.bot.keyboards import subjects_keyboard
+from app.bot.progress import StatusTicker
 from app.core.constants import (
     CALLBACK_NEW_CASE_PREFIX, CALLBACK_PICK_PREFIX, CALLBACK_REGENERATE_PREFIX,
     CALLBACK_SEARCH_PREFIX, CALLBACK_SUBJECTS_PREFIX, SUBJECTS_PAGE_SIZE,
 )
+from app.core.settings import Settings
 from app.knowledge import SubjectLoader
 from app.services import AssignmentService, CaseWorkflowService, NoSuitableCasesError
 
@@ -55,19 +57,49 @@ async def subject_details(callback: CallbackQuery, subject_loader: SubjectLoader
 
 
 @router.callback_query(F.data.startswith(CALLBACK_SEARCH_PREFIX))
-async def search_cases(callback: CallbackQuery, workflow_service: CaseWorkflowService | None,
-                       assignment_service: AssignmentService | None, subject_loader: SubjectLoader) -> None:
-    await _start_search(callback, (callback.data or "").removeprefix(CALLBACK_SEARCH_PREFIX), workflow_service, assignment_service, subject_loader)
+async def search_cases(
+    callback: CallbackQuery,
+    workflow_service: CaseWorkflowService | None,
+    assignment_service: AssignmentService | None,
+    subject_loader: SubjectLoader,
+    settings: Settings,
+) -> None:
+    await _start_search(
+        callback,
+        (callback.data or "").removeprefix(CALLBACK_SEARCH_PREFIX),
+        workflow_service,
+        assignment_service,
+        subject_loader,
+        settings,
+    )
 
 
 @router.callback_query(F.data.startswith(CALLBACK_NEW_CASE_PREFIX))
-async def new_case(callback: CallbackQuery, workflow_service: CaseWorkflowService | None,
-                   assignment_service: AssignmentService | None, subject_loader: SubjectLoader) -> None:
-    await _start_search(callback, (callback.data or "").removeprefix(CALLBACK_NEW_CASE_PREFIX), workflow_service, assignment_service, subject_loader)
+async def new_case(
+    callback: CallbackQuery,
+    workflow_service: CaseWorkflowService | None,
+    assignment_service: AssignmentService | None,
+    subject_loader: SubjectLoader,
+    settings: Settings,
+) -> None:
+    await _start_search(
+        callback,
+        (callback.data or "").removeprefix(CALLBACK_NEW_CASE_PREFIX),
+        workflow_service,
+        assignment_service,
+        subject_loader,
+        settings,
+    )
 
 
-async def _start_search(callback: CallbackQuery, slug: str, workflow_service: CaseWorkflowService | None,
-                        assignment_service: AssignmentService | None, subject_loader: SubjectLoader) -> None:
+async def _start_search(
+    callback: CallbackQuery,
+    slug: str,
+    workflow_service: CaseWorkflowService | None,
+    assignment_service: AssignmentService | None,
+    subject_loader: SubjectLoader,
+    settings: Settings,
+) -> None:
     if workflow_service is None or assignment_service is None:
         await callback.answer("لم يتم ضبط خدمة DeepSeek بعد.", show_alert=True)
         return
@@ -79,35 +111,95 @@ async def _start_search(callback: CallbackQuery, slug: str, workflow_service: Ca
     await callback.answer()
     if not callback.message:
         return
-    status = await callback.message.answer(f"🔎 جاري البحث والتحقق من ملفات الأحكام لمادة: {subject.name_ar}")
+
+    status = await callback.message.answer(
+        f"⚙️ جاري تهيئة البحث لمادة: {subject.name_ar}…"
+    )
+    progress = StatusTicker(
+        status,
+        initial_phase=f"⚙️ جاري تهيئة البحث لمادة: {subject.name_ar}…",
+        interval_seconds=settings.progress_update_interval_seconds,
+    )
+    await progress.start()
+
     try:
-        batch = await workflow_service.prepare(callback.from_user.id, slug)
+        batch = await workflow_service.prepare(
+            callback.from_user.id,
+            slug,
+            progress=progress.set_phase,
+        )
     except NoSuitableCasesError:
-        await status.edit_text("لم أعثر حالياً على قضية مناسبة بملف PDF أصلي قابل للتحقق. جرب البحث لاحقاً.")
+        await progress.stop(
+            "❌ انتهى البحث دون العثور على قضية مناسبة بملف PDF أصلي قابل للتحقق.\nلم يتم اعتماد أي قضية."
+        )
         return
     except (httpx.HTTPError, ValueError, KeyError):
         logger.exception("Case preparation failed subject=%s", slug)
-        await status.edit_text("❌ تعذر إكمال البحث والتحقق حالياً. لم يتم اعتماد أي قضية.")
+        await progress.stop(
+            "❌ تعذر إكمال البحث والتحقق حالياً. لم يتم اعتماد أي قضية."
+        )
+        return
+    except Exception:
+        logger.exception("Unexpected case preparation failure subject=%s", slug)
+        await progress.stop(
+            "❌ حدث خطأ غير متوقع أثناء البحث. لم يتم اعتماد أي قضية."
+        )
         return
 
     if batch.decision.is_auto:
         selected = workflow_service.selected(callback.from_user.id)
-        await status.edit_text(f"✅ تم اختيار القضية الأعلى تقييماً تلقائياً ({selected.final_score}/100).\n{selected.candidate.title}\n\nجاري إعداد الملفات...")
-        await _send_assignment(callback, selected.token, workflow_service, assignment_service, subject_loader, status_message=status)
+        await progress.set_phase(
+            f"✅ تم العثور على قضية موثقة واختيارها تلقائياً ({selected.final_score}/100).\n✍️ جاري إعداد التعليق والملفات…",
+            immediate=True,
+        )
+        await _send_assignment(
+            callback,
+            selected.token,
+            workflow_service,
+            assignment_service,
+            subject_loader,
+            progress=progress,
+        )
         return
 
+    await progress.stop()
     rows: list[list[InlineKeyboardButton]] = []
-    parts = [f"وجدت {len(batch.cases)} قضايا موثقة مناسبة. اختر واحدة:"]
+    parts = [f"✅ تم التحقق من {len(batch.cases)} قضايا مناسبة. اختر واحدة:"]
     for index, item in enumerate(batch.cases, start=1):
-        parts.append(f"\n{index}) {item.candidate.title}\nالمحكمة: {item.candidate.court_name or 'غير متوفرة'}\nرقم القضية: {item.candidate.case_number or 'غير متوفر'}\nالتقييم النهائي: {item.final_score}/100\nسبب المناسبة: {item.candidate.suitability_reason}")
-        rows.append([InlineKeyboardButton(text=f"اعتماد القضية {index}", callback_data=f"{CALLBACK_PICK_PREFIX}{item.token}")])
-    rows.append([InlineKeyboardButton(text="🔄 بحث جديد", callback_data=f"{CALLBACK_NEW_CASE_PREFIX}{slug}")])
-    await status.edit_text("\n".join(parts), reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), disable_web_page_preview=True)
+        parts.append(
+            f"\n{index}) {item.candidate.title}\n"
+            f"المحكمة: {item.candidate.court_name or 'غير متوفرة'}\n"
+            f"رقم القضية: {item.candidate.case_number or 'غير متوفر'}\n"
+            f"التقييم النهائي: {item.final_score}/100\n"
+            f"سبب المناسبة: {item.candidate.suitability_reason}"
+        )
+        rows.append([
+            InlineKeyboardButton(
+                text=f"اعتماد القضية {index}",
+                callback_data=f"{CALLBACK_PICK_PREFIX}{item.token}",
+            )
+        ])
+    rows.append([
+        InlineKeyboardButton(
+            text="🔄 بحث جديد",
+            callback_data=f"{CALLBACK_NEW_CASE_PREFIX}{slug}",
+        )
+    ])
+    await status.edit_text(
+        "\n".join(parts),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        disable_web_page_preview=True,
+    )
 
 
 @router.callback_query(F.data.startswith(CALLBACK_PICK_PREFIX))
-async def pick_case(callback: CallbackQuery, workflow_service: CaseWorkflowService | None,
-                    assignment_service: AssignmentService | None, subject_loader: SubjectLoader) -> None:
+async def pick_case(
+    callback: CallbackQuery,
+    workflow_service: CaseWorkflowService | None,
+    assignment_service: AssignmentService | None,
+    subject_loader: SubjectLoader,
+    settings: Settings,
+) -> None:
     if workflow_service is None or assignment_service is None:
         await callback.answer("الخدمة غير جاهزة.", show_alert=True)
         return
@@ -118,79 +210,174 @@ async def pick_case(callback: CallbackQuery, workflow_service: CaseWorkflowServi
         await callback.answer("انتهت جلسة الاختيار. ابدأ بحثاً جديداً.", show_alert=True)
         return
     await callback.answer()
-    status = await callback.message.answer("✍️ تم اعتماد القضية. جاري إنشاء التعليق والتحقق منه...") if callback.message else None
-    await _send_assignment(callback, token, workflow_service, assignment_service, subject_loader, status_message=status)
-
-
-async def _send_assignment(callback: CallbackQuery, token: str, workflow_service: CaseWorkflowService,
-                           assignment_service: AssignmentService, subject_loader: SubjectLoader,
-                           status_message=None) -> None:
     if not callback.message:
+        return
+    status = await callback.message.answer("✍️ تم اعتماد القضية. جاري إعداد التعليق…")
+    progress = StatusTicker(
+        status,
+        initial_phase="✍️ تم اعتماد القضية. جاري إعداد التعليق القانوني…",
+        interval_seconds=settings.progress_update_interval_seconds,
+    )
+    await progress.start()
+    await _send_assignment(
+        callback,
+        token,
+        workflow_service,
+        assignment_service,
+        subject_loader,
+        progress=progress,
+    )
+
+
+async def _send_assignment(
+    callback: CallbackQuery,
+    token: str,
+    workflow_service: CaseWorkflowService,
+    assignment_service: AssignmentService,
+    subject_loader: SubjectLoader,
+    *,
+    progress: StatusTicker | None = None,
+) -> None:
+    if not callback.message:
+        if progress:
+            await progress.stop()
         return
     try:
         selected = await workflow_service.select(callback.from_user.id, token)
-        subject = subject_loader.get_subject(workflow_service.session_subject(callback.from_user.id))
+        subject = subject_loader.get_subject(
+            workflow_service.session_subject(callback.from_user.id)
+        )
     except KeyError:
-        await callback.message.answer("انتهت الجلسة. ابدأ بحثاً جديداً.")
+        if progress:
+            await progress.stop("❌ انتهت الجلسة. ابدأ بحثاً جديداً.")
+        else:
+            await callback.message.answer("انتهت الجلسة. ابدأ بحثاً جديداً.")
         return
 
     docx_path: Path | None = None
     try:
-        docx_path = await assignment_service.generate_docx(selected, subject)
+        docx_path = await assignment_service.generate_docx(
+            selected,
+            subject,
+            progress=(progress.set_phase if progress else None),
+        )
         if not selected.artifact.path.exists():
             raise FileNotFoundError("Verified PDF was removed before send")
+
+        if progress:
+            await progress.set_phase("📤 جاري إرسال ملف الحكم القضائي الأصلي…", immediate=True)
+
         pdf_name = f"حكم قضائي - {selected.candidate.case_number or 'قضية'}.pdf"
         docx_name = f"التعليق على حكم قضائي - {subject.name_ar}.docx"
         pdf_caption = "ملف الحكم القضائي الأصلي من المصدر الرسمي."
         if selected.artifact_kind == "official_compilation_extract":
             pdf_caption = "صفحات الحكم الأصلية مستخرجة من مجموعة أحكام رسمية دون إعادة إنشاء محتواها."
-        await callback.message.answer_document(FSInputFile(selected.artifact.path, filename=pdf_name), caption=pdf_caption)
-        await callback.message.answer_document(FSInputFile(docx_path, filename=docx_name), caption="ملف التعليق الأكاديمي.")
+
+        await callback.message.answer_document(
+            FSInputFile(selected.artifact.path, filename=pdf_name),
+            caption=pdf_caption,
+        )
+
+        if progress:
+            await progress.set_phase("📤 تم إرسال الحكم. جاري إرسال ملف التعليق الأكاديمي…", immediate=True)
+
+        await callback.message.answer_document(
+            FSInputFile(docx_path, filename=docx_name),
+            caption="ملف التعليق الأكاديمي.",
+        )
         await workflow_service.record_sent(callback.from_user.id)
         actions = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="♻️ إعادة توليد التعليق", callback_data=f"{CALLBACK_REGENERATE_PREFIX}{token}")],
-            [InlineKeyboardButton(text="🔎 قضية أخرى", callback_data=f"{CALLBACK_NEW_CASE_PREFIX}{subject.slug}")],
+            [
+                InlineKeyboardButton(
+                    text="♻️ إعادة توليد التعليق",
+                    callback_data=f"{CALLBACK_REGENERATE_PREFIX}{token}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔎 قضية أخرى",
+                    callback_data=f"{CALLBACK_NEW_CASE_PREFIX}{subject.slug}",
+                )
+            ],
         ])
-        await callback.message.answer(f"✅ اكتمل التكليف.\nالتقييم: {selected.final_score}/100\nالمصدر الأصلي: {selected.artifact.source_url}", reply_markup=actions, disable_web_page_preview=True)
-        if status_message:
-            await status_message.edit_text("✅ تم إنشاء الملفات وإرسالها بنجاح.")
+        await callback.message.answer(
+            f"✅ اكتمل التكليف.\n"
+            f"التقييم: {selected.final_score}/100\n"
+            f"المصدر الأصلي: {selected.artifact.source_url}",
+            reply_markup=actions,
+            disable_web_page_preview=True,
+        )
+        if progress:
+            await progress.stop("✅ تم إنشاء الملفات والتحقق منها وإرسالها بنجاح.")
     except Exception:
         logger.exception("Assignment generation/send failed")
         await workflow_service.cleanup_user(callback.from_user.id)
-        if status_message:
-            await status_message.edit_text("❌ فشل إنشاء أو إرسال الملفات. لم تُسجل القضية كمستخدمة وتم تنظيف الملفات المؤقتة.")
+        if progress:
+            await progress.stop(
+                "❌ فشل إنشاء أو إرسال الملفات. لم تُسجل القضية كمستخدمة وتم تنظيف الملفات المؤقتة."
+            )
         else:
-            await callback.message.answer("❌ فشل إنشاء أو إرسال الملفات. لم تُسجل القضية كمستخدمة وتم تنظيف الملفات المؤقتة.")
+            await callback.message.answer(
+                "❌ فشل إنشاء أو إرسال الملفات. لم تُسجل القضية كمستخدمة وتم تنظيف الملفات المؤقتة."
+            )
     finally:
         if docx_path is not None:
             docx_path.unlink(missing_ok=True)
 
 
 @router.callback_query(F.data.startswith(CALLBACK_REGENERATE_PREFIX))
-async def regenerate(callback: CallbackQuery, workflow_service: CaseWorkflowService | None,
-                     assignment_service: AssignmentService | None, subject_loader: SubjectLoader) -> None:
+async def regenerate(
+    callback: CallbackQuery,
+    workflow_service: CaseWorkflowService | None,
+    assignment_service: AssignmentService | None,
+    subject_loader: SubjectLoader,
+    settings: Settings,
+) -> None:
     if workflow_service is None or assignment_service is None:
         await callback.answer("الخدمة غير جاهزة.", show_alert=True)
         return
     token = (callback.data or "").removeprefix(CALLBACK_REGENERATE_PREFIX)
     try:
         selected = await workflow_service.select(callback.from_user.id, token)
-        subject = subject_loader.get_subject(workflow_service.session_subject(callback.from_user.id))
+        subject = subject_loader.get_subject(
+            workflow_service.session_subject(callback.from_user.id)
+        )
     except KeyError:
         await callback.answer("انتهت الجلسة. أعد البحث عن القضية.", show_alert=True)
         return
     await callback.answer()
     if not callback.message:
         return
-    status = await callback.message.answer("♻️ جاري إعادة صياغة التعليق مع بقاء القضية والوقائع نفسها...")
+
+    status = await callback.message.answer(
+        "♻️ جاري إعادة صياغة التعليق مع بقاء القضية والوقائع نفسها…"
+    )
+    progress = StatusTicker(
+        status,
+        initial_phase="♻️ جاري إعادة صياغة التعليق مع بقاء القضية والوقائع نفسها…",
+        interval_seconds=settings.progress_update_interval_seconds,
+    )
+    await progress.start()
     path: Path | None = None
     try:
-        path = await assignment_service.generate_docx(selected, subject, regeneration=True)
-        await callback.message.answer_document(FSInputFile(path, filename=f"التعليق على حكم قضائي - {subject.name_ar} - بديل.docx"), caption="نسخة بديلة من التعليق على نفس القضية.")
-        await status.edit_text("✅ تم إرسال النسخة البديلة. لم تُسجل القضية مرة أخرى.")
+        path = await assignment_service.generate_docx(
+            selected,
+            subject,
+            regeneration=True,
+            progress=progress.set_phase,
+        )
+        await progress.set_phase("📤 جاري إرسال النسخة البديلة من التعليق…", immediate=True)
+        await callback.message.answer_document(
+            FSInputFile(
+                path,
+                filename=f"التعليق على حكم قضائي - {subject.name_ar} - بديل.docx",
+            ),
+            caption="نسخة بديلة من التعليق على نفس القضية.",
+        )
+        await progress.stop("✅ تم إرسال النسخة البديلة. لم تُسجل القضية مرة أخرى.")
     except Exception:
         logger.exception("Commentary regeneration failed")
-        await status.edit_text("❌ تعذرت إعادة توليد التعليق حالياً.")
+        await progress.stop("❌ تعذرت إعادة توليد التعليق حالياً.")
     finally:
         if path is not None:
             path.unlink(missing_ok=True)

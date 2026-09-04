@@ -74,4 +74,31 @@ MIGRATIONS: dict[int, str] = {
         WHERE case_number IS NOT NULL AND case_number <> ''
           AND court_name IS NOT NULL AND court_name <> '';
     """,
+    4: """
+    CREATE TABLE IF NOT EXISTS official_case_catalog (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        catalog_key TEXT NOT NULL UNIQUE,
+        collection_id TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        source_name TEXT NOT NULL,
+        source_url TEXT NOT NULL,
+        pdf_url TEXT NOT NULL,
+        pdf_sha256 TEXT,
+        page_start INTEGER NOT NULL,
+        page_end INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        case_number TEXT,
+        court_name TEXT,
+        judgment_year TEXT,
+        extracted_text TEXT NOT NULL,
+        normalized_text TEXT NOT NULL,
+        indexed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CHECK(page_start >= 1),
+        CHECK(page_end >= page_start)
+    );
+    CREATE INDEX IF NOT EXISTS idx_catalog_collection ON official_case_catalog(collection_id);
+    CREATE INDEX IF NOT EXISTS idx_catalog_source ON official_case_catalog(source_id);
+    CREATE INDEX IF NOT EXISTS idx_catalog_case_number ON official_case_catalog(case_number);
+    CREATE INDEX IF NOT EXISTS idx_catalog_year ON official_case_catalog(judgment_year);
+    """,
 }

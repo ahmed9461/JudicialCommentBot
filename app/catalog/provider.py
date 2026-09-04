@@ -16,6 +16,19 @@ from .text import normalize_arabic
 
 logger = logging.getLogger(__name__)
 
+# Generic legal/course boilerplate is deliberately excluded from lexical
+# expansion. Keeping domain-bearing terms (e.g. مسؤولية، عقد، عود، تنفيذ) makes
+# the same retrieval engine useful across all course files without hard-coding
+# one course in Python.
+_STOPWORDS = {
+    "القانون", "القانوني", "القانونية", "القضية", "قضية", "حكم", "الحكم",
+    "المقرر", "المادة", "المحكمة", "المحاكم", "مناسب", "مناسبة", "يظهر",
+    "بيان", "تحليل", "صلة", "موضوع", "موضوعات", "مفهوم", "مفاهيم", "تطبيق",
+    "تطبيقات", "أثر", "اثر", "مدى", "حالة", "حالات", "يناقش", "تصلح",
+    "يمكن", "فيها", "عليه", "عنها", "هذه", "ذلك", "التي", "الذي", "على",
+    "إلى", "الى", "عن", "من", "في", "مع", "أو", "او", "بين",
+}
+
 
 class SubjectSourceMap:
     def __init__(self, path: Path | None = None) -> None:
@@ -64,28 +77,33 @@ class CatalogResearchProvider:
         rows = await self.store.search(
             terms,
             preferred_source_ids=self.source_map.preferred_for(subject.slug),
-            limit=max(limit * 3, 12),
+            limit=max(limit * 4, 20),
         )
         excluded = {
             (_norm_identity(item.get("case_number")), _norm_identity(item.get("court_name")))
             for item in excluded_cases
             if item.get("case_number") and item.get("court_name")
         }
-        avoid_terms = [normalize_arabic(value) for value in subject.avoid_case_patterns if value]
+        avoid_phrases = [normalize_arabic(value) for value in subject.avoid_case_patterns if value]
         result: list[CaseCandidate] = []
         for row in rows:
             identity = (_norm_identity(row.get("case_number")), _norm_identity(row.get("court_name")))
             if identity in excluded:
                 continue
             haystack = str(row["normalized_text"])
-            if avoid_terms and all(term in haystack for term in avoid_terms if term):
-                continue
 
             match_score = int(row.get("catalog_match_score") or 0)
-            relevance = min(40, 18 + match_score // 3)
+            # Avoid patterns are guidance, not literal legal text in most YAML
+            # files. Only penalize an unusually strong literal match instead of
+            # silently throwing away a potentially excellent official judgment.
+            avoid_hit = any(phrase and phrase in haystack for phrase in avoid_phrases)
+            if avoid_hit:
+                match_score = max(0, match_score - 18)
+
+            relevance = min(40, 16 + match_score // 3)
             clarity = 18 if row.get("case_number") else 14
             reasoning = 13 if len(str(row.get("extracted_text") or "")) >= 1800 else 10
-            commentary = min(15, 9 + match_score // 15)
+            commentary = min(15, 8 + match_score // 14)
             estimated = min(96, relevance + clarity + reasoning + commentary + 10)
             matched_topics = [
                 term for term in subject.priority_topics
@@ -196,18 +214,35 @@ class CatalogFirstResearchProvider:
 
 
 def _subject_terms(subject: SubjectProfile) -> list[str]:
-    values = [
-        *subject.priority_topics,
+    """Build high-recall deterministic terms from one subject knowledge file.
+
+    Search keywords come first because they are intentionally concise. We then
+    preserve full topical phrases and add meaningful Arabic tokens from longer
+    phrases. This makes retrieval robust when a judgment uses only part of the
+    course terminology, while the scoring layer still rewards full-phrase hits.
+    """
+    phrases = [
         *subject.search_keywords,
+        *subject.priority_topics,
         *subject.secondary_topics,
         *subject.suitable_case_patterns,
     ]
     result: list[str] = []
-    for value in values:
+
+    def add(value: str) -> None:
         cleaned = value.strip()
-        if cleaned and cleaned not in result:
+        normalized = normalize_arabic(cleaned)
+        if len(normalized) >= 2 and normalized not in {normalize_arabic(item) for item in result}:
             result.append(cleaned)
-    return result[:32]
+
+    for phrase in phrases:
+        add(phrase)
+    for phrase in phrases:
+        for token in normalize_arabic(phrase).split():
+            if len(token) < 4 or token in _STOPWORDS or token.isdigit():
+                continue
+            add(token)
+    return result[:48]
 
 
 def _norm_identity(value: object) -> str:

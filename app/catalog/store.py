@@ -120,10 +120,13 @@ class CatalogStore:
         if not normalized_terms:
             return []
 
-        # SQL narrows the candidate set; final weighted ranking happens in Python
-        # so Arabic phrase matches and source preference remain deterministic.
-        clauses = " OR ".join("normalized_text LIKE ?" for _ in normalized_terms[:24])
-        params: list[object] = [f"%{term}%" for term in normalized_terms[:24]]
+        # Catalog sizes are expected in the thousands, not millions. A bounded
+        # LIKE prefilter over normalized Arabic is intentionally used instead of
+        # tying correctness to optional SQLite FTS extensions; the second stage
+        # ranks the bounded rows deterministically in Python.
+        sql_terms = normalized_terms[:40]
+        clauses = " OR ".join("normalized_text LIKE ?" for _ in sql_terms)
+        params: list[object] = [f"%{term}%" for term in sql_terms]
         sql = f"""
             SELECT catalog_key, collection_id, source_id, source_name, source_url,
                    pdf_url, pdf_sha256, page_start, page_end, title, case_number,
@@ -133,7 +136,7 @@ class CatalogStore:
              ORDER BY indexed_at DESC
              LIMIT ?
         """
-        params.append(max(20, min(int(limit) * 12, 400)))
+        params.append(max(40, min(int(limit) * 16, 600)))
         async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(sql, params)
@@ -146,17 +149,18 @@ class CatalogStore:
             phrase_hits = 0
             for index, term in enumerate(normalized_terms):
                 if term in haystack:
-                    # Priority topics and earlier search terms are worth more.
-                    match_score += max(2, 12 - min(index, 10))
+                    # Early terms are explicit search keywords/full course topics;
+                    # later terms are recall-expansion tokens and get less weight.
+                    match_score += max(1, 14 - min(index, 13))
                     if " " in term:
                         phrase_hits += 1
             if str(row["source_id"]) in preferred:
-                match_score += 12
+                match_score += 14
             if row.get("case_number"):
                 match_score += 4
             if row.get("court_name"):
                 match_score += 3
-            row["catalog_match_score"] = match_score + phrase_hits * 4
+            row["catalog_match_score"] = match_score + phrase_hits * 5
 
         rows.sort(key=lambda row: int(row["catalog_match_score"]), reverse=True)
         return rows[: max(1, int(limit))]

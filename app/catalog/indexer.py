@@ -14,7 +14,6 @@ import logging
 import re
 from collections import deque
 from dataclasses import dataclass
-from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -42,6 +41,7 @@ _CASE_MARKER = re.compile(r"(?:رقم\s+(?:القضية|الدعوى)|القضي
 class IndexReport:
     documents_seen: int = 0
     documents_indexed: int = 0
+    documents_skipped: int = 0
     documents_failed: int = 0
     cases_indexed: int = 0
 
@@ -65,8 +65,9 @@ class OfficialCatalogIndexer:
         *,
         source_filter: set[str] | None = None,
         max_documents: int | None = None,
+        force: bool = False,
     ) -> IndexReport:
-        documents_seen = documents_indexed = documents_failed = cases_indexed = 0
+        documents_seen = documents_indexed = documents_skipped = documents_failed = cases_indexed = 0
         remaining = max_documents if max_documents and max_documents > 0 else None
 
         for spec in self.manifest.sources:
@@ -75,22 +76,44 @@ class OfficialCatalogIndexer:
             documents = await self._documents_for(spec)
             for document_id, url in documents:
                 if remaining is not None and remaining <= 0:
-                    return IndexReport(documents_seen, documents_indexed, documents_failed, cases_indexed)
+                    return IndexReport(
+                        documents_seen,
+                        documents_indexed,
+                        documents_skipped,
+                        documents_failed,
+                        cases_indexed,
+                    )
                 documents_seen += 1
                 if remaining is not None:
                     remaining -= 1
+                if not force and await self.store.is_document_indexed(url):
+                    documents_skipped += 1
+                    continue
                 try:
-                    count = await self._index_document(spec, document_id, url)
+                    count, pdf_sha256 = await self._index_document(spec, document_id, url)
                 except Exception as exc:
                     documents_failed += 1
                     logger.warning("Catalog document failed id=%s url=%s reason=%s", document_id, url, exc)
                 else:
                     documents_indexed += 1
                     cases_indexed += count
+                    await self.store.record_document(
+                        source_url=url,
+                        collection_id=document_id,
+                        source_id=spec.source_id,
+                        pdf_sha256=pdf_sha256,
+                        case_count=count,
+                    )
                 if self.manifest.request_delay_seconds:
                     await asyncio.sleep(self.manifest.request_delay_seconds)
 
-        return IndexReport(documents_seen, documents_indexed, documents_failed, cases_indexed)
+        return IndexReport(
+            documents_seen,
+            documents_indexed,
+            documents_skipped,
+            documents_failed,
+            cases_indexed,
+        )
 
     async def _documents_for(self, spec: CatalogSourceSpec) -> list[tuple[str, str]]:
         direct = spec.direct_documents()
@@ -103,7 +126,7 @@ class OfficialCatalogIndexer:
     async def _crawl_official_pdfs(self, spec: CatalogSourceSpec) -> list[tuple[str, str]]:
         queue: deque[tuple[str, int]] = deque((url, 0) for url in spec.landing_pages)
         seen_pages: set[str] = set()
-        pdfs: dict[str, str] = {}
+        pdfs: set[str] = set()
         timeout = httpx.Timeout(20.0, connect=8.0)
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
             while queue and len(seen_pages) < spec.max_pages:
@@ -126,7 +149,7 @@ class OfficialCatalogIndexer:
                 if "pdf" in content_type or urlparse(str(response.url)).path.lower().endswith(".pdf"):
                     final_url = str(response.url)
                     if self.source_registry.can_be_original_pdf_source(final_url):
-                        pdfs.setdefault(final_url, f"{spec.id}:crawl:{len(pdfs)+1}")
+                        pdfs.add(final_url)
                     continue
                 if depth >= spec.max_depth:
                     continue
@@ -144,12 +167,15 @@ class OfficialCatalogIndexer:
                     ):
                         continue
                     if parsed.path.lower().endswith(".pdf"):
-                        pdfs.setdefault(absolute, f"{spec.id}:crawl:{len(pdfs)+1}")
+                        pdfs.add(absolute)
                     else:
                         queue.append((absolute, depth + 1))
-        return [(document_id, url) for url, document_id in pdfs.items()]
+        return [
+            (f"{spec.id}:crawl:{hashlib.sha256(url.encode('utf-8')).hexdigest()[:16]}", url)
+            for url in sorted(pdfs)
+        ]
 
-    async def _index_document(self, spec: CatalogSourceSpec, document_id: str, url: str) -> int:
+    async def _index_document(self, spec: CatalogSourceSpec, document_id: str, url: str) -> tuple[int, str]:
         if not self.source_registry.can_be_original_pdf_source(url):
             raise ValueError(f"Catalog document is not an approved official PDF source: {url}")
         try:
@@ -162,7 +188,7 @@ class OfficialCatalogIndexer:
             starts = self._case_starts(page_texts)
             if not starts:
                 logger.info("No conservative case boundaries detected in %s", url)
-                return 0
+                return 0, artifact.sha256
 
             await self.store.remove_collection(document_id)
             indexed = 0
@@ -204,7 +230,7 @@ class OfficialCatalogIndexer:
                 await self.store.upsert(case)
                 indexed += 1
             logger.info("Indexed %d cases from official document %s", indexed, url)
-            return indexed
+            return indexed, artifact.sha256
         finally:
             artifact.path.unlink(missing_ok=True)
 

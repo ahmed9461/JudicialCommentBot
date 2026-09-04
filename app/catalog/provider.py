@@ -11,6 +11,7 @@ from app.knowledge import SubjectProfile
 from app.research.models import CaseCandidate
 from app.research.provider import ResearchProgressCallback, ResearchProvider
 
+from .errors import CatalogNotReadyError
 from .store import CatalogStore
 from .text import normalize_arabic
 
@@ -71,7 +72,9 @@ class CatalogResearchProvider:
                 f"الفهرس الحالي: {stats.cases} قضية من {stats.collections} مجموعة."
             )
         if stats.cases == 0:
-            return []
+            raise CatalogNotReadyError(
+                "Official judicial catalog is empty; run `python -m app.catalog refresh` first"
+            )
 
         terms = _subject_terms(subject)
         rows = await self.store.search(
@@ -167,6 +170,15 @@ class CatalogFirstResearchProvider:
         limit: int,
         progress: ResearchProgressCallback | None = None,
     ) -> list[CaseCandidate]:
+        # An empty catalog means deployment setup is incomplete, not that the
+        # selected course lacks judgments. Never spend web-search credits to hide
+        # that operational mistake.
+        stats = await self.catalog.store.stats()
+        if stats.cases == 0:
+            raise CatalogNotReadyError(
+                "Official judicial catalog has not been built on this deployment"
+            )
+
         local = await self.catalog.search_cases(
             subject,
             excluded_cases=excluded_cases,
@@ -180,8 +192,8 @@ class CatalogFirstResearchProvider:
 
         if progress is not None:
             await progress(
-                "🌐 الفهرس المحلي لا يحتوي عددًا كافيًا من المرشحين؛ "
-                "سيُستخدم البحث عبر الويب كخيار احتياطي فقط."
+                "🌐 الفهرس الرسمي موجود لكن نتائجه لهذه المادة غير كافية؛ "
+                "سيُستخدم البحث عبر الويب كخيار احتياطي محدود."
             )
         try:
             remote = await self.fallback.search_cases(
@@ -228,11 +240,13 @@ def _subject_terms(subject: SubjectProfile) -> list[str]:
         *subject.suitable_case_patterns,
     ]
     result: list[str] = []
+    seen_normalized: set[str] = set()
 
     def add(value: str) -> None:
         cleaned = value.strip()
         normalized = normalize_arabic(cleaned)
-        if len(normalized) >= 2 and normalized not in {normalize_arabic(item) for item in result}:
+        if len(normalized) >= 2 and normalized not in seen_normalized:
+            seen_normalized.add(normalized)
             result.append(cleaned)
 
     for phrase in phrases:

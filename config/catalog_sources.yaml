@@ -32,6 +32,34 @@ sources:
       - /knowledge-center/JudicialBlogs/
     pdf_only: true
 
+  - id: gstc_decisions
+    source_id: zakat_tax_customs_committees
+    source_name: الأمانة العامة للجان الزكوية والضريبية والجمركية
+    kind: landing_page_crawl
+    enabled: true
+    landing_pages:
+      - https://www.gstc.gov.sa/ar/DocumentsLb/DecisionsRules/Pages/default.aspx
+    max_depth: 2
+    max_pages: 120
+    allowed_path_prefixes:
+      - /ar/DocumentsLb/DecisionsRules/
+    pdf_only: true
+
+  - id: crsd_decisions
+    source_id: securities_disputes
+    source_name: الأمانة العامة للجان الفصل في منازعات الأوراق المالية
+    kind: landing_page_crawl
+    enabled: true
+    landing_pages:
+      - https://crsd.gov.sa/ar/ResolutionsCommittee/Pages/Index.aspx
+    max_depth: 2
+    max_pages: 100
+    allowed_path_prefixes:
+      - /ar/ResolutionsCommittee/
+      - /ar/Decisions/
+      - /ar/Principles/
+    pdf_only: true
+
 rules:
   skip_scanned_without_text: true
   min_case_text_chars: 350

@@ -98,8 +98,10 @@ class CaseWorkflowService:
                 )
                 try:
                     candidates = await self.research_provider.search_cases(
-                        subject, excluded_cases=dynamic_exclusions,
+                        subject,
+                        excluded_cases=dynamic_exclusions,
                         limit=self.settings.search_candidate_limit,
+                        progress=progress,
                     )
                 except Exception:
                     if verified:

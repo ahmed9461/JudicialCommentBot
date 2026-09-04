@@ -29,6 +29,7 @@ class DeepSeekResponsesClient:
         base_url: str,
         connect_timeout_seconds: float = 15.0,
         idle_timeout_seconds: float = 180.0,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         if not api_key.strip():
             raise ValueError("DeepSeek API key is required")
@@ -36,6 +37,7 @@ class DeepSeekResponsesClient:
         self.base_url = base_url.rstrip("/")
         self.connect_timeout_seconds = max(1.0, float(connect_timeout_seconds))
         self.idle_timeout_seconds = max(5.0, float(idle_timeout_seconds))
+        self.transport = transport
 
     async def create(
         self,
@@ -62,7 +64,11 @@ class DeepSeekResponsesClient:
         output_item_ids: set[str] = set()
         text_chunks: list[str] = []
 
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            follow_redirects=True,
+            transport=self.transport,
+        ) as client:
             async with client.stream(
                 "POST",
                 f"{self.base_url}/responses",

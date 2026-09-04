@@ -12,15 +12,20 @@ class Settings(BaseSettings):
 
     deepseek_api_key: SecretStr | None = None
     deepseek_base_url: str = "https://api.deepseek.com"
+    # Kept for backwards compatibility with existing .env files.
     deepseek_model: str = "deepseek-v4-pro"
+    deepseek_research_model: str = "deepseek-v4-flash"
+    deepseek_commentary_model: str = "deepseek-v4-pro"
     deepseek_request_timeout_seconds: float = 120.0
-    deepseek_research_attempts: int = 2
+    deepseek_research_attempts: int = 1
+    deepseek_synthesis_attempts: int = 2
+    deepseek_max_search_calls_for_synthesis: int = 8
 
     database_url: str = "sqlite+aiosqlite:///runtime/judicial_comment_bot.db"
     auto_accept_score: int = 90
     candidate_display_count: int = 3
-    search_candidate_limit: int = 8
-    search_retry_rounds: int = 2
+    search_candidate_limit: int = 5
+    search_retry_rounds: int = 1
 
     temp_dir: str = "runtime/tmp"
     log_level: str = "INFO"
@@ -30,7 +35,8 @@ class Settings(BaseSettings):
 
     pdf_max_bytes: int = 50 * 1024 * 1024
     pdf_max_pages: int = 1500
-    pdf_download_timeout_seconds: float = 90.0
+    pdf_download_timeout_seconds: float = 45.0
+    pdf_connect_timeout_seconds: float = 10.0
     pdf_max_redirects: int = 5
     compilation_page_threshold: int = 60
     commentary_input_max_chars: int = 70000
@@ -54,18 +60,29 @@ class Settings(BaseSettings):
             raise ValueError("AUTO_ACCEPT_SCORE must be between 0 and 100")
         return value
 
-    @field_validator("deepseek_research_attempts", "search_retry_rounds")
+    @field_validator(
+        "deepseek_research_attempts",
+        "deepseek_synthesis_attempts",
+        "deepseek_max_search_calls_for_synthesis",
+        "search_retry_rounds",
+        "search_candidate_limit",
+    )
     @classmethod
     def validate_positive_attempts(cls, value: int) -> int:
         if value < 1:
-            raise ValueError("Retry/attempt counts must be at least 1")
+            raise ValueError("Retry/attempt/count values must be at least 1")
         return value
 
-    @field_validator("progress_update_interval_seconds")
+    @field_validator(
+        "progress_update_interval_seconds",
+        "deepseek_request_timeout_seconds",
+        "pdf_download_timeout_seconds",
+        "pdf_connect_timeout_seconds",
+    )
     @classmethod
-    def validate_progress_interval(cls, value: float) -> float:
+    def validate_positive_timeouts(cls, value: float) -> float:
         if value < 1:
-            raise ValueError("PROGRESS_UPDATE_INTERVAL_SECONDS must be at least 1")
+            raise ValueError("Timeout/interval values must be at least 1 second")
         return value
 
 

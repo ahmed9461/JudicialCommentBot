@@ -1,10 +1,11 @@
-"""Owner-only allowlist and history management."""
+"""Owner-only allowlist, history, and catalog status management."""
 
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.filters.command import CommandObject
 from aiogram.types import CallbackQuery, Message
 
+from app.catalog import CatalogStore
 from app.core.constants import MAX_ALLOWED_USERS_DISPLAY
 from app.db import Database
 from app.services import AccessService
@@ -91,6 +92,29 @@ async def history(message: Message, access_service: AccessService, database: Dat
     await message.answer("\n".join(parts))
 
 
+@router.message(Command("catalog"))
+async def catalog_status(message: Message, access_service: AccessService, catalog_store: CatalogStore) -> None:
+    requester = _owner_id(message)
+    if not access_service.is_owner(requester):
+        await message.answer("⛔ هذا الأمر للمالك فقط.")
+        return
+    stats = await catalog_store.stats()
+    if stats.cases == 0:
+        await message.answer(
+            "🗂️ فهرس الأحكام الرسمية فارغ حاليًا.\n"
+            "شغّل على السيرفر: python -m app.catalog refresh\n"
+            "بعد البناء سيصبح الفهرس هو مسار البحث الأساسي لجميع المقررات."
+        )
+        return
+    await message.answer(
+        "🗂️ حالة فهرس الأحكام الرسمية:\n"
+        f"القضايا: {stats.cases}\n"
+        f"المجموعات: {stats.collections}\n"
+        f"الجهات الرسمية: {stats.sources}\n\n"
+        "يُستخدم هذا الفهرس أولًا، والبحث عبر الويب احتياطي فقط عند نقص النتائج."
+    )
+
+
 @router.callback_query(F.data == "admin:help")
 async def admin_help(callback: CallbackQuery, access_service: AccessService) -> None:
     if not access_service.is_owner(callback.from_user.id):
@@ -98,6 +122,6 @@ async def admin_help(callback: CallbackQuery, access_service: AccessService) -> 
         return
     if callback.message:
         await callback.message.answer(
-            "إدارة البوت:\n/allow <telegram_id>\n/deny <telegram_id>\n/users\n/history"
+            "إدارة البوت:\n/allow <telegram_id>\n/deny <telegram_id>\n/users\n/history\n/catalog"
         )
     await callback.answer()

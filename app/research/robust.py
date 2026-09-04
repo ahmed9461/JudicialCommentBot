@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable
 
 import httpx
 
+from app.deepseek import DeepSeekStreamError
 from app.knowledge import SubjectProfile
 
 from .models import CaseCandidate
@@ -28,7 +29,7 @@ class ResearchServiceError(RuntimeError):
 
 
 class RobustResearchProvider:
-    """Validate balance/model availability before costly search and map API failures."""
+    """Validate account/model availability before search and map API failures."""
 
     def __init__(
         self,
@@ -68,20 +69,26 @@ class RobustResearchProvider:
             raise _http_error(exc.response.status_code, _safe_body(exc.response)) from exc
         except httpx.TimeoutException as exc:
             raise ResearchServiceError(
-                "deepseek_timeout",
-                "⏱️ انتهت مهلة DeepSeek قبل اكتمال البحث. لم يتم خصم محاولة بحث جديدة تلقائيًا.",
-                detail=type(exc).__name__,
+                "deepseek_stream_idle_timeout",
+                "⏱️ انقطع بث DeepSeek بسبب عدم وصول أي بيانات لفترة طويلة. لم يتم اعتماد أي قضية.",
+                detail=f"{type(exc).__name__}: {exc}",
             ) from exc
         except httpx.RequestError as exc:
             raise ResearchServiceError(
                 "deepseek_network",
-                "🌐 تعذر الاتصال بخدمة DeepSeek حاليًا. لم يتم اعتماد أي قضية.",
+                "🌐 انقطع الاتصال بخدمة DeepSeek أثناء البحث. لم يتم اعتماد أي قضية.",
                 detail=f"{type(exc).__name__}: {exc}",
+            ) from exc
+        except DeepSeekStreamError as exc:
+            raise ResearchServiceError(
+                "deepseek_stream_protocol",
+                "📡 انتهى بث DeepSeek قبل وصول النتيجة النهائية. لم يتم اعتماد أي قضية.",
+                detail=str(exc),
             ) from exc
         except ValueError as exc:
             raise ResearchServiceError(
                 "deepseek_output",
-                "🧩 انتهى بحث DeepSeek لكن لم تصل نتيجة منظمة قابلة للاستخدام. لم يتم اعتماد أي قضية.",
+                "🧩 اكتمل البحث لكن لم تنتج قائمة قضايا منظمة وصالحة للتحقق. لم يتم اعتماد أي قضية.",
                 detail=str(exc),
             ) from exc
 
@@ -91,26 +98,38 @@ class RobustResearchProvider:
             return
 
         if progress is not None:
-            await progress("🩺 جاري فحص اتصال DeepSeek والرصيد والنموذج قبل بدء البحث المدفوع…")
+            await progress("🩺 جاري فحص اتصال DeepSeek والرصيد والنموذج قبل بدء البحث…")
 
         headers = {"Authorization": f"Bearer {self.api_key}"}
         timeout = httpx.Timeout(10.0, connect=5.0)
         try:
             async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-                balance_response = await client.get(f"{self.base_url}/user/balance", headers=headers)
+                balance_response = await client.get(
+                    f"{self.base_url}/user/balance",
+                    headers=headers,
+                )
                 if balance_response.status_code >= 400:
-                    raise _http_error(balance_response.status_code, _safe_body(balance_response))
+                    raise _http_error(
+                        balance_response.status_code,
+                        _safe_body(balance_response),
+                    )
                 balance = balance_response.json()
                 if balance.get("is_available") is False:
                     raise ResearchServiceError(
                         "deepseek_balance",
-                        "💳 رصيد DeepSeek غير كافٍ لتنفيذ البحث. لم يبدأ البحث المدفوع.",
+                        "💳 رصيد DeepSeek غير كافٍ لتنفيذ البحث. لم يبدأ البحث.",
                         detail="balance is unavailable",
                     )
 
-                models_response = await client.get(f"{self.base_url}/models", headers=headers)
+                models_response = await client.get(
+                    f"{self.base_url}/models",
+                    headers=headers,
+                )
                 if models_response.status_code >= 400:
-                    raise _http_error(models_response.status_code, _safe_body(models_response))
+                    raise _http_error(
+                        models_response.status_code,
+                        _safe_body(models_response),
+                    )
                 model_ids = {
                     str(item.get("id"))
                     for item in (models_response.json().get("data") or [])
@@ -119,7 +138,7 @@ class RobustResearchProvider:
                 if model_ids and self.model not in model_ids:
                     raise ResearchServiceError(
                         "deepseek_model",
-                        f"⚙️ نموذج البحث المضبوط ({self.model}) غير متاح للحساب حاليًا. لم يبدأ البحث المدفوع.",
+                        f"⚙️ نموذج البحث المضبوط ({self.model}) غير متاح للحساب حاليًا. لم يبدأ البحث.",
                         detail=f"available={sorted(model_ids)}",
                     )
         except ResearchServiceError:
@@ -129,19 +148,19 @@ class RobustResearchProvider:
         except httpx.TimeoutException as exc:
             raise ResearchServiceError(
                 "deepseek_preflight_timeout",
-                "🌐 تعذر فحص DeepSeek قبل البحث بسبب مهلة اتصال. لم يبدأ البحث المدفوع.",
+                "🌐 تعذر فحص DeepSeek قبل البحث بسبب مهلة اتصال. لم يبدأ البحث.",
                 detail=type(exc).__name__,
             ) from exc
         except httpx.RequestError as exc:
             raise ResearchServiceError(
                 "deepseek_preflight_network",
-                "🌐 تعذر الوصول إلى DeepSeek لفحص الخدمة. لم يبدأ البحث المدفوع.",
+                "🌐 تعذر الوصول إلى DeepSeek لفحص الخدمة. لم يبدأ البحث.",
                 detail=f"{type(exc).__name__}: {exc}",
             ) from exc
         except (TypeError, ValueError) as exc:
             raise ResearchServiceError(
                 "deepseek_preflight_response",
-                "⚠️ تعذر قراءة حالة DeepSeek قبل البحث. لم يبدأ البحث المدفوع.",
+                "⚠️ تعذر قراءة حالة DeepSeek قبل البحث. لم يبدأ البحث.",
                 detail=str(exc),
             ) from exc
 
@@ -151,17 +170,53 @@ class RobustResearchProvider:
 
 def _http_error(status: int, detail: str) -> ResearchServiceError:
     mapping: dict[int, tuple[str, str]] = {
-        400: ("deepseek_bad_request", "⚙️ DeepSeek رفض صيغة طلب البحث (HTTP 400). يحتاج إعداد الطلب إلى مراجعة، ولم يتم اعتماد قضية."),
-        401: ("deepseek_auth", "🔑 مفتاح DeepSeek غير صالح أو غير مصرح (HTTP 401)."),
-        402: ("deepseek_balance", "💳 رصيد DeepSeek غير كافٍ (HTTP 402). لم يتم تنفيذ البحث."),
-        422: ("deepseek_parameters", "⚙️ DeepSeek رفض أحد إعدادات الطلب (HTTP 422). لم يتم اعتماد قضية."),
-        429: ("deepseek_rate_limit", "⏳ تم الوصول إلى حد طلبات DeepSeek مؤقتًا (HTTP 429). جرّب لاحقًا."),
-        500: ("deepseek_server", "🛠️ DeepSeek واجه خطأ داخليًا (HTTP 500). جرّب لاحقًا."),
-        503: ("deepseek_overloaded", "🚦 DeepSeek مزدحم حاليًا (HTTP 503). جرّب لاحقًا."),
+        400: (
+            "deepseek_bad_request",
+            "⚙️ DeepSeek رفض صيغة طلب البحث (HTTP 400). لم يتم اعتماد قضية.",
+        ),
+        401: (
+            "deepseek_auth",
+            "🔑 مفتاح DeepSeek غير صالح أو غير مصرح (HTTP 401).",
+        ),
+        402: (
+            "deepseek_balance",
+            "💳 رصيد DeepSeek غير كافٍ (HTTP 402). لم يتم تنفيذ البحث.",
+        ),
+        408: (
+            "deepseek_request_timeout",
+            "⏱️ انتهت مهلة الطلب لدى DeepSeek (HTTP 408). جرّب لاحقًا.",
+        ),
+        422: (
+            "deepseek_parameters",
+            "⚙️ DeepSeek رفض أحد إعدادات الطلب (HTTP 422). لم يتم اعتماد قضية.",
+        ),
+        429: (
+            "deepseek_rate_limit",
+            "⏳ تم الوصول إلى حد طلبات DeepSeek مؤقتًا (HTTP 429). جرّب لاحقًا.",
+        ),
+        500: (
+            "deepseek_server",
+            "🛠️ DeepSeek واجه خطأ داخليًا (HTTP 500). جرّب لاحقًا.",
+        ),
+        502: (
+            "deepseek_gateway",
+            "🌐 بوابة DeepSeek أعادت خطأ مؤقتًا (HTTP 502). جرّب لاحقًا.",
+        ),
+        503: (
+            "deepseek_overloaded",
+            "🚦 DeepSeek مزدحم حاليًا (HTTP 503). جرّب لاحقًا.",
+        ),
+        504: (
+            "deepseek_gateway_timeout",
+            "⏱️ بوابة DeepSeek انتهت مهلتها (HTTP 504). جرّب لاحقًا.",
+        ),
     }
     code, message = mapping.get(
         status,
-        ("deepseek_http", f"🌐 فشل طلب DeepSeek برمز HTTP {status}. لم يتم اعتماد أي قضية."),
+        (
+            "deepseek_http",
+            f"🌐 فشل طلب DeepSeek برمز HTTP {status}. لم يتم اعتماد أي قضية.",
+        ),
     )
     return ResearchServiceError(code, message, detail=detail)
 

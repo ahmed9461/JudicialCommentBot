@@ -13,7 +13,7 @@ from app.db import Database
 from app.knowledge import SubjectLoader
 from app.pdf import (
     PdfAcquisitionError, PdfAcquisitionService, PdfArtifact, PdfValidationError,
-    extract_page_range, extract_pdf_text,
+    extract_page_range, extract_pdf_text, locate_case_page_range, verify_case_number_in_pdf,
 )
 from app.pdf.validation import validate_pdf_file
 from app.ranking import ScoreResult, ScoringPolicy, SelectionDecision, select_candidates
@@ -136,11 +136,24 @@ class CaseWorkflowService:
         try:
             artifact = await self.pdf_service.acquire(pdf_url, suggested_name=candidate.case_number or candidate.title)
             if artifact.page_count > self.settings.compilation_page_threshold:
-                if not candidate.has_page_range:
-                    raise PdfValidationError("Large official compilation requires a verified case page range")
-                artifact = self._extract_compilation_case(artifact, candidate)
+                if not candidate.case_number:
+                    raise PdfValidationError("Large compilation requires a case number for identity verification")
+                if candidate.has_page_range:
+                    start, end = candidate.pdf_page_start, candidate.pdf_page_end
+                    assert start is not None and end is not None
+                else:
+                    start, end = locate_case_page_range(artifact.path, candidate.case_number)
+                artifact = self._extract_compilation_case(artifact, candidate, start, end)
             elif candidate.has_page_range:
-                artifact = self._extract_compilation_case(artifact, candidate)
+                if not candidate.case_number:
+                    raise PdfValidationError("Page-range extraction requires a case number")
+                assert candidate.pdf_page_start is not None and candidate.pdf_page_end is not None
+                artifact = self._extract_compilation_case(
+                    artifact, candidate, candidate.pdf_page_start, candidate.pdf_page_end
+                )
+
+            if candidate.case_number and not verify_case_number_in_pdf(artifact.path, candidate.case_number):
+                raise PdfValidationError("Verified PDF does not contain the claimed case number")
 
             if await self.database.is_case_used(
                 case_number=candidate.case_number, court_name=candidate.court_name,
@@ -164,16 +177,14 @@ class CaseWorkflowService:
                 artifact.path.unlink(missing_ok=True)
             return None
 
-    def _extract_compilation_case(self, artifact: PdfArtifact, candidate: CaseCandidate) -> PdfArtifact:
-        if not candidate.has_page_range:
-            raise PdfValidationError("Compilation case page range is missing")
-        assert candidate.pdf_page_start is not None and candidate.pdf_page_end is not None
+    def _extract_compilation_case(self, artifact: PdfArtifact, candidate: CaseCandidate,
+                                  start_page: int, end_page: int) -> PdfArtifact:
         output = artifact.path.with_name(f"{artifact.path.stem}-case.pdf")
-        extract_page_range(
-            artifact.path, start_page=candidate.pdf_page_start,
-            end_page=candidate.pdf_page_end, output_pdf=output,
-        )
+        extract_page_range(artifact.path, start_page=start_page, end_page=end_page, output_pdf=output)
         artifact.path.unlink(missing_ok=True)
+        if not candidate.case_number or not verify_case_number_in_pdf(output, candidate.case_number):
+            output.unlink(missing_ok=True)
+            raise PdfValidationError("Extracted compilation pages do not match the case number")
         page_count = validate_pdf_file(output, max_pages=self.settings.pdf_max_pages)
         digest = hashlib.sha256(output.read_bytes()).hexdigest()
         return PdfArtifact(
@@ -213,18 +224,14 @@ class CaseWorkflowService:
         selected = session.selected
         if not session.recorded:
             await self.database.record_case(
-                subject_slug=session.subject_slug,
-                case_number=selected.candidate.case_number,
-                court_name=selected.candidate.court_name,
-                source_name=selected.candidate.source_name,
-                source_url=selected.artifact.source_url,
-                pdf_sha256=selected.artifact.sha256,
+                subject_slug=session.subject_slug, case_number=selected.candidate.case_number,
+                court_name=selected.candidate.court_name, source_name=selected.candidate.source_name,
+                source_url=selected.artifact.source_url, pdf_sha256=selected.artifact.sha256,
                 suitability_score=selected.final_score,
             )
             await self.database.add_audit(
                 "assignment_sent", subject_slug=session.subject_slug,
-                case_number=selected.candidate.case_number,
-                details=f"score={selected.final_score}",
+                case_number=selected.candidate.case_number, details=f"score={selected.final_score}",
             )
             session.recorded = True
         if self.settings.delete_files_after_send:

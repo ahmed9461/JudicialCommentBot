@@ -5,14 +5,8 @@ from __future__ import annotations
 import secrets
 from pathlib import Path
 
-from app.commentary import (
-    DeepSeekCommentaryGenerator,
-    DocxRenderer,
-    validate_commentary,
-    validate_docx_file,
-)
+from app.commentary import DeepSeekCommentaryGenerator, DocxRenderer, validate_commentary, validate_docx_file
 from app.knowledge import SubjectProfile
-
 from .case_workflow import PreparedCase
 
 
@@ -25,16 +19,13 @@ class AssignmentService:
 
     async def generate_docx(self, prepared: PreparedCase, subject: SubjectProfile, *, regeneration: bool = False) -> Path:
         draft = await self.generator.generate(
-            subject=subject,
-            candidate=prepared.candidate,
-            judgment_text=prepared.judgment_text,
-            variation_hint=(
-                "أعد الصياغة بأسلوب أكاديمي طبيعي مختلف مع بقاء الوقائع والنتيجة كما هي."
-                if regeneration else None
-            ),
+            subject=subject, candidate=prepared.candidate, judgment_text=prepared.judgment_text,
+            variation_hint=("أعد الصياغة بأسلوب أكاديمي طبيعي مختلف مع بقاء الوقائع والنتيجة كما هي." if regeneration else None),
         )
         validate_commentary(draft)
         path = self.temp_dir / f"commentary-{secrets.token_hex(8)}.docx"
-        self.renderer.render(draft, subject_name=subject.name_ar, output_path=path)
+        self.renderer.render(
+            draft, subject_name=subject.name_ar, subject_slug=subject.slug, output_path=path
+        )
         validate_docx_file(path)
         return path

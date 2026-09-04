@@ -10,6 +10,9 @@ Group=judicialbot
 WorkingDirectory=/opt/JudicialCommentBot
 EnvironmentFile=/opt/JudicialCommentBot/.env
 ExecStart=/opt/JudicialCommentBot/.venv/bin/python -m app.catalog refresh
+# Initial indexing may legitimately process many large official collections.
+# Do not let the generic systemd start timeout kill a healthy catalog build.
+TimeoutStartSec=6h
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7

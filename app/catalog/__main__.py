@@ -4,6 +4,7 @@ Examples:
     python -m app.catalog stats
     python -m app.catalog refresh
     python -m app.catalog refresh --source moj_1435 --max-documents 2
+    python -m app.catalog refresh --force
 """
 
 from __future__ import annotations
@@ -55,12 +56,14 @@ async def _run(args: argparse.Namespace) -> None:
     report = await indexer.refresh(
         source_filter=set(args.source or []) or None,
         max_documents=args.max_documents,
+        force=args.force,
     )
     stats = await store.stats()
     print(
         "refresh_complete "
         f"documents_seen={report.documents_seen} "
         f"documents_indexed={report.documents_indexed} "
+        f"documents_skipped={report.documents_skipped} "
         f"documents_failed={report.documents_failed} "
         f"cases_indexed={report.cases_indexed} "
         f"catalog_cases={stats.cases}"
@@ -74,6 +77,7 @@ def main() -> None:
     refresh = sub.add_parser("refresh")
     refresh.add_argument("--source", action="append", help="Manifest source id; may be repeated")
     refresh.add_argument("--max-documents", type=int, default=None)
+    refresh.add_argument("--force", action="store_true", help="Re-index documents already present in the catalog")
     asyncio.run(_run(parser.parse_args()))
 
 

@@ -1,0 +1,31 @@
+slug: civil_contracts
+name_ar: العقود المدنية
+verification_status: needs_official_syllabus_review
+source_notes: يفضل نزاع عقد مدني مسمى أو تطبيق واضح لالتزامات عقدية مدنية.
+priority_topics:
+  - البيع والإيجار والمقاولة والوكالة بحسب نطاق المقرر
+  - التزامات الأطراف في العقود المدنية
+  - الضمان والعيوب
+  - الفسخ والتنفيذ والتعويض العقدي
+secondary_topics:
+  - انتقال الملكية والتسليم
+  - المسؤولية عن الإخلال بالعقد
+suitable_case_patterns:
+  - نزاع بيع حول التسليم أو الثمن أو العيب
+  - نزاع إيجار حول الالتزامات أو الفسخ
+  - نزاع مقاولة حول التنفيذ والعيوب
+avoid_case_patterns:
+  - نزاع تجاري بحت أو عقد إداري
+search_keywords:
+  - عقد بيع
+  - عقد إيجار
+  - عقد مقاولة
+  - عيب المبيع
+  - فسخ العقد
+  - إخلال تعاقدي
+commentary_focus:
+  - تحديد نوع العقد وآثاره الخاصة
+  - تحليل الالتزام محل الإخلال
+  - ربط الجزاء بطبيعة العقد
+preferred_source_hints: [official]
+scoring_hints: {direct_topic_match_bonus: 14, weak_relation_penalty: 12}

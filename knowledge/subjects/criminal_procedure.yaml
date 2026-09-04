@@ -1,0 +1,32 @@
+slug: criminal_procedure
+name_ar: الإجراءات الجزائية
+verification_status: needs_official_syllabus_review
+source_notes: يفضل حكم يناقش صحة إجراء جزائي وتأثيره في الدليل أو الدعوى.
+priority_topics:
+  - الاستدلال والتحقيق
+  - القبض والتفتيش والتوقيف
+  - الاختصاص الجزائي
+  - المحاكمة وضمانات المتهم
+  - الاعتراض على الأحكام الجزائية
+secondary_topics:
+  - بطلان الإجراء
+  - حجية الأدلة الناتجة عن الإجراءات
+suitable_case_patterns:
+  - نزاع حول مشروعية قبض أو تفتيش
+  - حكم يقرر بطلان أو صحة إجراء تحقيق
+  - قضية تتناول ضمانات الدفاع أو الاختصاص
+avoid_case_patterns:
+  - قضية تركز حصراً على أركان الجريمة الموضوعية
+search_keywords:
+  - بطلان التفتيش
+  - القبض
+  - التوقيف
+  - إجراءات التحقيق
+  - ضمانات المتهم
+  - بطلان الإجراء
+commentary_focus:
+  - تحديد الإجراء وسنده
+  - تحليل أثر صحته أو بطلانه
+  - بيان علاقة الإجراء بضمانات المحاكمة العادلة
+preferred_source_hints: [official]
+scoring_hints: {direct_topic_match_bonus: 15, weak_relation_penalty: 13}

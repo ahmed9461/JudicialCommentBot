@@ -1,0 +1,31 @@
+slug: inheritance_wills_waqf
+name_ar: المواريث والوصايا والوقف
+verification_status: needs_official_syllabus_review
+source_notes: يفضل حكم تتضح فيه مسألة ميراث أو وصية أو وقف دون تشعب إجرائي يطغى على الموضوع.
+priority_topics:
+  - استحقاق الإرث والأنصبة
+  - موانع الإرث
+  - الوصية وشروطها وحدودها
+  - الوقف وشروط الواقف وإدارته
+secondary_topics:
+  - التركة وقسمتها
+  - المنازعة في صفة وارث أو مستحق
+suitable_case_patterns:
+  - نزاع في قسمة تركة أو استحقاق وارث
+  - حكم حول صحة وصية أو تجاوزها حدودها
+  - قضية وقف حول شرط الواقف أو الاستحقاق
+avoid_case_patterns:
+  - دعوى أسرية لا تتضمن مسألة ميراث أو وصية أو وقف واضحة
+search_keywords:
+  - قسمة التركة
+  - استحقاق الإرث
+  - وصية
+  - وقف
+  - شرط الواقف
+  - وارث
+commentary_focus:
+  - تحديد القاعدة الشرعية أو النظامية الحاكمة
+  - شرح أثر الصفة والسبب في الاستحقاق
+  - تحليل كيفية حماية حقوق الورثة أو الموصى لهم أو المستحقين
+preferred_source_hints: [official]
+scoring_hints: {direct_topic_match_bonus: 15, weak_relation_penalty: 13}

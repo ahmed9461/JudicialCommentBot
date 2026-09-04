@@ -1,0 +1,31 @@
+slug: zakat_tax
+name_ar: الزكاة والضرائب
+verification_status: needs_official_syllabus_review
+source_notes: الأولوية لقرارات لجان المنازعات الزكوية والضريبية والمصادر الرسمية المختصة.
+priority_topics:
+  - الوعاء الزكوي
+  - ضريبة الدخل
+  - ضريبة القيمة المضافة
+  - الربط والتقدير والاعتراض
+  - الغرامات والمخالفات الضريبية
+secondary_topics:
+  - الاستحقاق والإعفاء
+  - الاختصاص والإجراءات الضريبية
+suitable_case_patterns:
+  - قرار لجنة يفصل في ربط أو تقدير أو غرامة
+  - نزاع حول خضوع معاملة للضريبة أو الزكاة
+  - قضية اعتراض على قرار الهيئة
+avoid_case_patterns:
+  - نزاع مالي عام لا يتعلق بزكاة أو ضريبة
+search_keywords:
+  - ضريبة القيمة المضافة
+  - الوعاء الزكوي
+  - الربط الضريبي
+  - غرامة ضريبية
+  - اعتراض زكوي
+commentary_focus:
+  - تحديد الواقعة الخاضعة والقاعدة النظامية
+  - تحليل سبب الربط أو الإعفاء أو الغرامة
+  - تتبع إجراءات الاعتراض إذا كانت مؤثرة
+preferred_source_hints: [official_tax_committee]
+scoring_hints: {direct_topic_match_bonus: 16, weak_relation_penalty: 14}

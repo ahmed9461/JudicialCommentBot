@@ -1,0 +1,31 @@
+slug: negotiable_instruments
+name_ar: الأوراق التجارية
+verification_status: needs_official_syllabus_review
+source_notes: يفضل قضايا الكمبيالة والسند لأمر والشيك وما يتصل بها من دفوع والتزامات صرفية.
+priority_topics:
+  - الكمبيالة
+  - السند لأمر
+  - الشيك
+  - التظهير والضمان والوفاء
+  - الدفوع الصرفية
+secondary_topics:
+  - الرجوع الصرفي
+  - التقادم أو المواعيد الخاصة بحسب المقرر
+suitable_case_patterns:
+  - مطالبة بسند لأمر مع دفع يتعلق بصحته أو سببه
+  - نزاع شيك أو كمبيالة يوضح الالتزام الصرفي
+avoid_case_patterns:
+  - مطالبة دين عادية لا تعتمد على ورقة تجارية
+search_keywords:
+  - سند لأمر
+  - كمبيالة
+  - شيك
+  - تظهير
+  - التزام صرفي
+  - رجوع صرفي
+commentary_focus:
+  - تحديد نوع الورقة وشروطها
+  - تحليل الالتزام الصرفي والدفوع
+  - التفريق بين العلاقة الأصلية والورقة عند الحاجة
+preferred_source_hints: [official]
+scoring_hints: {direct_topic_match_bonus: 16, weak_relation_penalty: 13}

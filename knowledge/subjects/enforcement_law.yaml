@@ -1,0 +1,31 @@
+slug: enforcement_law
+name_ar: قانون التنفيذ
+verification_status: needs_official_syllabus_review
+source_notes: يفضل حكم أو قرار يتعلق بالسند التنفيذي أو إجراءات التنفيذ أو منازعاته.
+priority_topics:
+  - السندات التنفيذية
+  - اختصاص قاضي التنفيذ
+  - إجراءات التنفيذ الجبري
+  - الحجز والبيع والتوزيع
+  - منازعات التنفيذ
+secondary_topics:
+  - الإفصاح عن الأموال
+  - وقف التنفيذ بحسب المقرر
+suitable_case_patterns:
+  - نزاع حول صلاحية سند للتنفيذ
+  - منازعة تنفيذ موضوعية أو وقتية
+  - قضية تتناول إجراء حجز أو امتناع عن التنفيذ
+avoid_case_patterns:
+  - حكم موضوعي سابق للتنفيذ لا يناقش أي مسألة تنفيذية
+search_keywords:
+  - سند تنفيذي
+  - منازعة تنفيذ
+  - وقف التنفيذ
+  - الحجز التنفيذي
+  - قاضي التنفيذ
+commentary_focus:
+  - تحديد السند والإجراء التنفيذي
+  - بيان اختصاص قاضي التنفيذ
+  - تحليل أثر الاعتراض على استمرار التنفيذ
+preferred_source_hints: [official]
+scoring_hints: {direct_topic_match_bonus: 15, weak_relation_penalty: 14}

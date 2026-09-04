@@ -1,0 +1,29 @@
+slug: special_criminal_law
+name_ar: القانون الجزائي الخاص
+verification_status: needs_official_syllabus_review
+source_notes: يفضل حكم حول جريمة محددة مع توافر عناصرها الخاصة وتسبيب واضح.
+priority_topics:
+  - الجرائم الواقعة على الأشخاص
+  - الجرائم الواقعة على الأموال
+  - الجرائم الخاصة التي يغطيها المقرر
+  - العناصر المميزة لكل جريمة
+secondary_topics:
+  - الظروف المشددة الخاصة
+  - التمييز بين أوصاف جرائم متقاربة
+suitable_case_patterns:
+  - حكم يناقش عناصر سرقة أو احتيال أو اعتداء أو جريمة محددة أخرى ضمن المقرر
+  - قضية يتغير وصفها لانتفاء عنصر خاص
+avoid_case_patterns:
+  - قضية تناقش القصد أو الشروع بصورة عامة دون أهمية لنوع الجريمة
+search_keywords:
+  - سرقة
+  - احتيال
+  - اعتداء
+  - خيانة أمانة
+  - جريمة خاصة
+commentary_focus:
+  - تحديد العناصر الخاصة للجريمة
+  - تمييزها عن الجرائم المتشابهة
+  - تحليل سبب انطباق الوصف أو انتفائه
+preferred_source_hints: [official]
+scoring_hints: {direct_topic_match_bonus: 14, weak_relation_penalty: 13}

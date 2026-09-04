@@ -1,0 +1,31 @@
+slug: property_assets
+name_ar: الملكية والأموال
+verification_status: needs_official_syllabus_review
+source_notes: يفضل حكم عيني واضح حول الملكية أو الحيازة أو الحقوق العينية.
+priority_topics:
+  - الأموال وتقسيماتها
+  - حق الملكية ونطاقه
+  - أسباب كسب الملكية
+  - الحيازة
+  - الحقوق العينية الأصلية والتبعية بحسب المقرر
+secondary_topics:
+  - الشيوع والقسمة
+  - القيود على الملكية
+suitable_case_patterns:
+  - منازعة ملكية أو حيازة مع سندات واضحة
+  - قضية شيوع أو قسمة مال
+  - حكم حول حق عيني أو قيد على الملكية
+avoid_case_patterns:
+  - نزاع عقدي لا تتوقف نتيجته على حق عيني
+search_keywords:
+  - إثبات الملكية
+  - الحيازة
+  - ملكية على الشيوع
+  - قسمة المال
+  - حق عيني
+commentary_focus:
+  - تحديد طبيعة المال والحق
+  - تحليل سبب ثبوت الملكية أو الحيازة
+  - التفريق بين الحق العيني والحق الشخصي عند الحاجة
+preferred_source_hints: [official]
+scoring_hints: {direct_topic_match_bonus: 15, weak_relation_penalty: 13}

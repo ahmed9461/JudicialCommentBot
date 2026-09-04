@@ -1,6 +1,6 @@
 """Normalized research candidate models."""
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, model_validator
 
 
 class CaseCandidate(BaseModel):
@@ -20,6 +20,15 @@ class CaseCandidate(BaseModel):
     legal_issue_clarity: int | None = Field(default=None, ge=0, le=20)
     reasoning_quality: int | None = Field(default=None, ge=0, le=15)
     academic_commentary_value: int | None = Field(default=None, ge=0, le=15)
+
+    @model_validator(mode="after")
+    def validate_page_range(self) -> "CaseCandidate":
+        if (self.pdf_page_start is None) != (self.pdf_page_end is None):
+            raise ValueError("PDF page range must include both start and end")
+        if self.pdf_page_start is not None and self.pdf_page_end is not None:
+            if self.pdf_page_end < self.pdf_page_start:
+                raise ValueError("PDF page range end must be >= start")
+        return self
 
     @property
     def source_url_str(self) -> str:

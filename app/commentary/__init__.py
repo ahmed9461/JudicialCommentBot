@@ -1,7 +1,7 @@
 from .deepseek import DeepSeekCommentaryGenerator
 from .docx_renderer import DocxRenderer
 from .models import CommentaryDraft
-from .validation import CommentaryValidationError, validate_commentary
+from .validation import CommentaryValidationError, validate_commentary, validate_docx_file
 
 __all__ = [
     "CommentaryDraft",
@@ -9,4 +9,5 @@ __all__ = [
     "DocxRenderer",
     "CommentaryValidationError",
     "validate_commentary",
+    "validate_docx_file",
 ]

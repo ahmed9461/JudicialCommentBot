@@ -87,7 +87,11 @@ class CaseWorkflowService:
             await self._cleanup_session(user_id)
             subject = self.subject_loader.get_subject(subject_slug)
             await _notify(progress, f"⚙️ جاري تجهيز البحث لمادة: {subject.name_ar}…")
-            dynamic_exclusions = list(await self.database.used_cases_for_subject(subject_slug))
+            # Exclude used judgments across every course before discovery so the
+            # catalog/web layers do not spend work on a case already consumed in
+            # another subject. The post-download SHA/case checks below remain the
+            # final correctness gate and cover history older than this search list.
+            dynamic_exclusions = list(await self.database.used_cases_global())
             verified: list[PreparedCase] = []
             seen_identity: set[tuple[str, ...]] = set()
 

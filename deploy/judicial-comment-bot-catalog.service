@@ -1,0 +1,20 @@
+[Unit]
+Description=JudicialCommentBot Official Catalog Refresh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=judicialbot
+Group=judicialbot
+WorkingDirectory=/opt/JudicialCommentBot
+EnvironmentFile=/opt/JudicialCommentBot/.env
+ExecStart=/opt/JudicialCommentBot/.venv/bin/python -m app.catalog refresh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/JudicialCommentBot/runtime

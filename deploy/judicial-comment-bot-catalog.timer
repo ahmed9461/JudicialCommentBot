@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh JudicialCommentBot official judicial catalog weekly
+
+[Timer]
+OnBootSec=20min
+OnUnitActiveSec=7d
+RandomizedDelaySec=30min
+Persistent=true
+Unit=judicial-comment-bot-catalog.service
+
+[Install]
+WantedBy=timers.target

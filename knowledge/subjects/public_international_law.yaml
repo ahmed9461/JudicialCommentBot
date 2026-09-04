@@ -1,0 +1,29 @@
+slug: public_international_law
+name_ar: القانون الدولي العام
+verification_status: needs_official_syllabus_review
+source_notes: قد تكون السوابق المحلية أقل عدداً؛ تقبل أحكاماً أو قرارات رسمية ذات عنصر دولي عام واضح.
+priority_topics:
+  - مصادر القانون الدولي العام
+  - المعاهدات والالتزامات الدولية
+  - الدولة والاختصاص والحصانات
+  - المسؤولية الدولية
+secondary_topics:
+  - المنظمات الدولية
+  - تسوية المنازعات الدولية
+suitable_case_patterns:
+  - حكم يتناول حصانة دولة أو بعثة أو أثر معاهدة
+  - قرار رسمي يطبق التزاماً دولياً عاماً
+avoid_case_patterns:
+  - نزاع خاص ذو عنصر أجنبي فقط؛ غالباً أنسب للقانون الدولي الخاص
+search_keywords:
+  - حصانة الدولة
+  - اتفاقية دولية
+  - معاهدة
+  - اختصاص دولي عام
+  - بعثة دبلوماسية
+commentary_focus:
+  - تحديد مصدر القاعدة الدولية
+  - تحليل علاقتها بالنظام الداخلي والاختصاص
+  - تمييز القانون الدولي العام عن الخاص
+preferred_source_hints: [official]
+scoring_hints: {direct_topic_match_bonus: 14, weak_relation_penalty: 16}

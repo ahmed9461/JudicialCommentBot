@@ -1,0 +1,31 @@
+slug: judiciary_evidence
+name_ar: القضاء والإثبات
+verification_status: needs_official_syllabus_review
+source_notes: يفضل حكم تكون نتيجة الدعوى فيه مرتبطة مباشرة بعبء أو وسيلة إثبات.
+priority_topics:
+  - عبء الإثبات
+  - الإقرار والكتابة والشهادة واليمين والقرائن
+  - حجية الأدلة
+  - سلطة المحكمة في تقدير الدليل
+secondary_topics:
+  - الخبرة القضائية
+  - الإثبات الإلكتروني بحسب نطاق المقرر
+suitable_case_patterns:
+  - عجز مدعٍ عن البينة وتحول الحكم بسبب عبء الإثبات
+  - حكم يعتمد عقداً مكتوباً أو إقراراً أو يميناً حاسمة
+  - قضية تتناول حجية مستند أو خبرة
+avoid_case_patterns:
+  - حكم لا يعرض أي نزاع حقيقي في الدليل
+search_keywords:
+  - البينة على من ادعى
+  - اليمين
+  - الإقرار
+  - حجية الدليل
+  - الخبرة
+  - عبء الإثبات
+commentary_focus:
+  - تحديد من يتحمل عبء الإثبات ولماذا
+  - تحليل قيمة كل دليل في تسبيب المحكمة
+  - بيان أثر الدليل على النتيجة
+preferred_source_hints: [official]
+scoring_hints: {direct_topic_match_bonus: 15, weak_relation_penalty: 13}

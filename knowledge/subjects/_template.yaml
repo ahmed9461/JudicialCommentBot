@@ -1,0 +1,21 @@
+slug: example_subject
+name_ar: اسم المقرر
+verification_status: needs_official_syllabus_review
+source_notes: خريطة تأسيسية؛ تُراجع مع توصيف المقرر الرسمي.
+priority_topics:
+  - موضوع رئيسي
+secondary_topics:
+  - موضوع ثانوي
+suitable_case_patterns:
+  - نمط قضية مناسب
+avoid_case_patterns:
+  - نمط ضعيف الصلة
+search_keywords:
+  - كلمة بحث
+commentary_focus:
+  - محور يجب تحليله
+preferred_source_hints:
+  - official
+scoring_hints:
+  direct_topic_match_bonus: 10
+  weak_relation_penalty: 10

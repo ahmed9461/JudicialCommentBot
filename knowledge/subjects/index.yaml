@@ -1,0 +1,35 @@
+subjects:
+  - {slug: law_intro, name_ar: المدخل لدراسة علم القانون}
+  - {slug: constitutional_law, name_ar: القانون الدستوري}
+  - {slug: criminology_penology, name_ar: علم الإجرام والعقاب}
+  - {slug: islamic_fiqh_intro, name_ar: المدخل لدراسة الفقه الإسلامي}
+  - {slug: legal_history, name_ar: تاريخ القانون}
+  - {slug: contract_rules, name_ar: أحكام العقد}
+  - {slug: administrative_law, name_ar: القانون الإداري}
+  - {slug: general_criminal_law, name_ar: القانون الجزائي العام}
+  - {slug: civil_liability, name_ar: المسؤولية المدنية}
+  - {slug: commercial_law, name_ar: القانون التجاري}
+  - {slug: judiciary_evidence, name_ar: القضاء والإثبات}
+  - {slug: public_international_law, name_ar: القانون الدولي العام}
+  - {slug: labor_social_insurance, name_ar: قانون العمل والتأمينات الاجتماعية}
+  - {slug: administrative_judiciary, name_ar: القضاء الإداري}
+  - {slug: civil_contracts, name_ar: العقود المدنية}
+  - {slug: inheritance_wills_waqf, name_ar: المواريث والوصايا والوقف}
+  - {slug: civil_procedure, name_ar: إجراءات التقاضي}
+  - {slug: special_criminal_law, name_ar: القانون الجزائي الخاص}
+  - {slug: property_assets, name_ar: الملكية والأموال}
+  - {slug: companies, name_ar: الشركات}
+  - {slug: criminal_procedure, name_ar: الإجراءات الجزائية}
+  - {slug: enforcement_law, name_ar: قانون التنفيذ}
+  - {slug: negotiable_instruments, name_ar: الأوراق التجارية}
+  - {slug: zakat_tax, name_ar: الزكاة والضرائب}
+  - {slug: administrative_contracts, name_ar: العقود الإدارية}
+  - {slug: usul_al_fiqh, name_ar: أصول الفقه}
+  - {slug: intellectual_property, name_ar: الملكية الفكرية}
+  - {slug: international_commercial_law, name_ar: القانون التجاري الدولي}
+  - {slug: legal_drafting, name_ar: أصول الصياغة القانونية}
+  - {slug: private_international_law, name_ar: القانون الدولي الخاص}
+  - {slug: maritime_air_law, name_ar: القانون البحري والجوي}
+  - {slug: research_methods, name_ar: مبادئ البحث العلمي}
+  - {slug: insurance_law, name_ar: قانون التأمين}
+  - {slug: contemporary_legal_systems, name_ar: الأنظمة القانونية المعاصرة}

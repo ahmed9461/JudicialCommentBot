@@ -1,0 +1,1 @@
+"""JudicialCommentBot application package."""

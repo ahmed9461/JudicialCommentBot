@@ -1,0 +1,40 @@
+version: 1
+sources:
+  - id: ministry_of_justice
+    tier: 1
+    role: official
+    domains:
+      - moj.gov.sa
+      - www.moj.gov.sa
+      - laws.moj.gov.sa
+    supports_direct_pdf: true
+    supports_official_compilations: true
+
+  - id: board_of_grievances
+    tier: 1
+    role: official
+    domains:
+      - bog.gov.sa
+      - www.bog.gov.sa
+    supports_direct_pdf: true
+    supports_official_compilations: true
+
+  - id: official_quasi_judicial
+    tier: 1
+    role: official
+    domains: []
+    notes: تضاف نطاقات الجهات الرسمية المختصة بعد التحقق منها ولا تُخمن.
+
+  - id: tashree
+    tier: 2
+    role: discovery
+    domains:
+      - tashree.app
+      - www.tashree.app
+    supports_direct_pdf: false
+    notes: يستخدم لاكتشاف القضية والبيانات ثم يفضّل الرجوع إلى المصدر الرسمي.
+
+rules:
+  require_https: true
+  allow_unknown_domains_for_discovery_only: true
+  allow_unknown_domains_as_original_pdf_source: false

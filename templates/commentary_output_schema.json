@@ -1,0 +1,29 @@
+{
+  "type": "object",
+  "required": [
+    "facts_and_course_link",
+    "legal_issue",
+    "court_reasoning",
+    "comment_and_opinion",
+    "references"
+  ],
+  "properties": {
+    "facts_and_course_link": {"type": "string", "minLength": 100},
+    "legal_issue": {"type": "string", "minLength": 80},
+    "court_reasoning": {"type": "string", "minLength": 120},
+    "comment_and_opinion": {"type": "string", "minLength": 120},
+    "references": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["title", "source_type"],
+        "properties": {
+          "title": {"type": "string"},
+          "source_type": {"type": "string"},
+          "url": {"type": ["string", "null"]}
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}

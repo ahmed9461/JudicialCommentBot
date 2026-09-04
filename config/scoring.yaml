@@ -1,0 +1,15 @@
+version: 1
+auto_accept_score: 90
+candidate_display_count: 3
+search_candidate_limit: 8
+weights:
+  subject_relevance: 40
+  legal_issue_clarity: 20
+  reasoning_quality: 15
+  academic_commentary_value: 15
+  source_pdf_quality: 10
+selection:
+  require_verified_pdf_before_final_selection: true
+  require_score_margin_for_auto_accept: true
+  min_auto_accept_margin: 5
+  fallback_to_top_three: true

@@ -30,7 +30,10 @@ async def run() -> None:
     settings = get_settings()
     setup_logging(settings.log_level)
     Path(settings.temp_dir).mkdir(parents=True, exist_ok=True)
-    removed = cleanup_stale_files(settings.temp_dir, max_age_hours=settings.stale_temp_max_age_hours)
+    removed = cleanup_stale_files(
+        settings.temp_dir,
+        max_age_hours=settings.stale_temp_max_age_hours,
+    )
     if removed:
         logger.info("Removed %d stale temporary files", removed)
 
@@ -50,10 +53,13 @@ async def run() -> None:
             api_key=api_key,
             base_url=settings.deepseek_base_url,
             model=settings.deepseek_research_model,
-            timeout_seconds=settings.deepseek_research_timeout_seconds,
+            timeout_seconds=settings.deepseek_stream_idle_timeout_seconds,
+            connect_timeout_seconds=settings.deepseek_connect_timeout_seconds,
             request_attempts=settings.deepseek_research_attempts,
             synthesis_attempts=settings.deepseek_synthesis_attempts,
             max_search_calls_for_synthesis=settings.deepseek_max_search_calls_for_synthesis,
+            discovery_reasoning_effort=settings.deepseek_research_reasoning_effort,
+            synthesis_reasoning_effort=settings.deepseek_synthesis_reasoning_effort,
         )
         research_provider = RobustResearchProvider(
             inner=deepseek_research,
@@ -66,7 +72,9 @@ async def run() -> None:
             api_key=api_key,
             base_url=settings.deepseek_base_url,
             model=settings.deepseek_commentary_model,
-            timeout_seconds=settings.deepseek_commentary_timeout_seconds,
+            timeout_seconds=settings.deepseek_stream_idle_timeout_seconds,
+            connect_timeout_seconds=settings.deepseek_connect_timeout_seconds,
+            reasoning_effort=settings.deepseek_commentary_reasoning_effort,
         )
         pdf_service = PdfAcquisitionService(
             source_registry=source_registry,
@@ -111,7 +119,10 @@ async def run() -> None:
 
     try:
         await bot.delete_webhook(drop_pending_updates=True)
-        logger.info("Starting Telegram polling with %d subjects", len(subject_loader.list_subjects()))
+        logger.info(
+            "Starting Telegram polling with %d subjects",
+            len(subject_loader.list_subjects()),
+        )
         await dispatcher.start_polling(bot)
     finally:
         await bot.session.close()

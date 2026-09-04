@@ -74,6 +74,24 @@ class Database:
             )
             return [{"case_number": row[0], "court_name": row[1], "source_url": row[2]} for row in await cursor.fetchall()]
 
+    async def used_cases_global(self, limit: int = 1000) -> list[dict[str, str | None]]:
+        """Return recent used identities across every course before discovery.
+
+        Final SHA/case integrity checks still run later; this method prevents the
+        catalog or web fallback from wasting work on cases already known to be
+        used in another subject.
+        """
+        bounded = max(1, min(int(limit), 5000))
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "SELECT case_number, court_name, source_url FROM case_history ORDER BY used_at DESC LIMIT ?",
+                (bounded,),
+            )
+            return [
+                {"case_number": row[0], "court_name": row[1], "source_url": row[2]}
+                for row in await cursor.fetchall()
+            ]
+
     async def is_case_used(self, *, case_number: str | None, court_name: str | None, pdf_sha256: str | None) -> bool:
         clauses: list[str] = []
         params: list[str] = []

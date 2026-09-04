@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     search_candidate_limit: int = 5
     search_retry_rounds: int = 1
 
+    # Primary discovery path: a reusable local catalog built from official PDF
+    # collections. Web/LLM research is a fallback, never the default search path.
+    catalog_enabled: bool = True
+    catalog_fallback_to_web: bool = True
+    catalog_min_candidates_before_fallback: int = 3
+    catalog_manifest_path: str = "config/catalog_sources.yaml"
+
     temp_dir: str = "runtime/tmp"
     log_level: str = "INFO"
     delete_files_after_send: bool = True
@@ -86,6 +93,7 @@ class Settings(BaseSettings):
         "deepseek_max_search_calls_for_synthesis",
         "search_retry_rounds",
         "search_candidate_limit",
+        "catalog_min_candidates_before_fallback",
     )
     @classmethod
     def validate_positive_attempts(cls, value: int) -> int:

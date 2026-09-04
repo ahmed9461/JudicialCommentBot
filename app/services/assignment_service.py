@@ -37,6 +37,7 @@ class AssignmentService:
                 "أعد الصياغة بأسلوب أكاديمي طبيعي مختلف مع بقاء الوقائع والنتيجة كما هي."
                 if regeneration else None
             ),
+            progress=progress,
         )
         await _notify(progress, "🧾 تم استلام المسودة، جاري التحقق من الوقائع والبنية والممنوعات…")
         validate_commentary(draft)

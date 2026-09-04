@@ -1,4 +1,4 @@
-version: 1
+version: 2
 sources:
   - id: ministry_of_justice
     tier: 1
@@ -19,11 +19,41 @@ sources:
     supports_direct_pdf: true
     supports_official_compilations: true
 
-  - id: official_quasi_judicial
+  - id: securities_disputes
     tier: 1
     role: official
-    domains: []
-    notes: تضاف نطاقات الجهات الرسمية المختصة بعد التحقق منها ولا تُخمن.
+    domains:
+      - crsd.gov.sa
+      - www.crsd.gov.sa
+    supports_direct_pdf: true
+    supports_official_compilations: true
+
+  - id: banking_finance_disputes
+    tier: 1
+    role: official
+    domains:
+      - bfc.gov.sa
+      - www.bfc.gov.sa
+    supports_direct_pdf: true
+    supports_official_compilations: true
+
+  - id: zakat_tax_customs_committees
+    tier: 1
+    role: official
+    domains:
+      - gstc.gov.sa
+      - www.gstc.gov.sa
+    supports_direct_pdf: true
+    supports_official_compilations: true
+
+  - id: insurance_disputes
+    tier: 1
+    role: official
+    domains:
+      - idc.gov.sa
+      - www.idc.gov.sa
+    supports_direct_pdf: true
+    supports_official_compilations: true
 
   - id: tashree
     tier: 2
@@ -32,7 +62,7 @@ sources:
       - tashree.app
       - www.tashree.app
     supports_direct_pdf: false
-    notes: يستخدم لاكتشاف القضية والبيانات ثم يفضّل الرجوع إلى المصدر الرسمي.
+    notes: يستخدم لاكتشاف القضية والبيانات ثم يجب الرجوع إلى المصدر الرسمي.
 
 rules:
   require_https: true

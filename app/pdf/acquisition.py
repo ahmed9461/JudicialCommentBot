@@ -29,16 +29,9 @@ class PdfArtifact:
 
 
 class PdfAcquisitionService:
-    def __init__(
-        self,
-        *,
-        source_registry: SourceRegistry,
-        temp_dir: str | Path,
-        max_bytes: int,
-        max_pages: int,
-        timeout_seconds: float,
-        max_redirects: int,
-    ) -> None:
+    def __init__(self, *, source_registry: SourceRegistry, temp_dir: str | Path,
+                 max_bytes: int, max_pages: int, timeout_seconds: float,
+                 max_redirects: int) -> None:
         self.source_registry = source_registry
         self.temp_dir = Path(temp_dir)
         self.max_bytes = max_bytes
@@ -54,11 +47,10 @@ class PdfAcquisitionService:
             for redirect_count in range(self.max_redirects + 1):
                 await validate_pdf_url(current_url, self.source_registry)
                 request = client.build_request(
-                    "GET",
-                    current_url,
+                    "GET", current_url,
                     headers={
                         "Accept": "application/pdf,application/octet-stream;q=0.9,*/*;q=0.1",
-                        "User-Agent": "JudicialCommentBot/0.3 (+PDF acquisition)",
+                        "User-Agent": "JudicialCommentBot/1.0 (+official PDF acquisition)",
                     },
                 )
                 response = await client.send(request, stream=True)
@@ -66,37 +58,26 @@ class PdfAcquisitionService:
                     if response.status_code in {301, 302, 303, 307, 308}:
                         location = response.headers.get("location")
                         if not location:
-                            raise PdfAcquisitionError(
-                                "Redirect response has no Location header"
-                            )
+                            raise PdfAcquisitionError("Redirect response has no Location header")
                         if redirect_count >= self.max_redirects:
                             raise PdfAcquisitionError("Too many PDF redirects")
                         current_url = urljoin(current_url, location)
                         continue
                     if response.status_code >= 400:
-                        raise PdfAcquisitionError(
-                            f"PDF download returned HTTP {response.status_code}"
-                        )
-                    return await self._save_response(
-                        response, current_url, suggested_name
-                    )
+                        raise PdfAcquisitionError(f"PDF download returned HTTP {response.status_code}")
+                    return await self._save_response(response, current_url, suggested_name)
                 finally:
                     await response.aclose()
         raise PdfAcquisitionError("PDF redirect loop")
 
-    async def _save_response(
-        self, response: httpx.Response, source_url: str, suggested_name: str
-    ) -> PdfArtifact:
+    async def _save_response(self, response: httpx.Response, source_url: str, suggested_name: str) -> PdfArtifact:
         filename = _safe_filename(suggested_name)
-        fd, raw_path = tempfile.mkstemp(
-            prefix=f"{filename}-", suffix=".pdf", dir=self.temp_dir
-        )
+        fd, raw_path = tempfile.mkstemp(prefix=f"{filename}-", suffix=".pdf", dir=self.temp_dir)
         os.close(fd)
         path = Path(raw_path)
         digest = hashlib.sha256()
         size = 0
         first = b""
-
         try:
             with path.open("wb") as handle:
                 async for chunk in response.aiter_bytes(64 * 1024):
@@ -106,21 +87,13 @@ class PdfAcquisitionService:
                         first = chunk[:5]
                     size += len(chunk)
                     if size > self.max_bytes:
-                        raise PdfValidationError(
-                            "PDF exceeds configured byte limit"
-                        )
+                        raise PdfValidationError("PDF exceeds configured byte limit")
                     digest.update(chunk)
                     handle.write(chunk)
             if first != b"%PDF-":
                 raise PdfValidationError("Downloaded resource is not a PDF")
             page_count = validate_pdf_file(path, max_pages=self.max_pages)
-            return PdfArtifact(
-                path=path,
-                source_url=source_url,
-                sha256=digest.hexdigest(),
-                size_bytes=size,
-                page_count=page_count,
-            )
+            return PdfArtifact(path=path, source_url=source_url, sha256=digest.hexdigest(), size_bytes=size, page_count=page_count)
         except Exception:
             path.unlink(missing_ok=True)
             raise

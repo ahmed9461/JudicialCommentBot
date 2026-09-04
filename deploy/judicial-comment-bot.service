@@ -1,0 +1,23 @@
+[Unit]
+Description=JudicialCommentBot Telegram Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=judicialbot
+Group=judicialbot
+WorkingDirectory=/opt/JudicialCommentBot
+EnvironmentFile=/opt/JudicialCommentBot/.env
+ExecStart=/opt/JudicialCommentBot/.venv/bin/python -m app
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/JudicialCommentBot/runtime
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+[Unit]
+Description=Backup JudicialCommentBot SQLite database
+
+[Service]
+Type=oneshot
+User=judicialbot
+Group=judicialbot
+WorkingDirectory=/opt/JudicialCommentBot
+ExecStart=/opt/JudicialCommentBot/.venv/bin/python scripts/backup_db.py --database-url sqlite+aiosqlite:///runtime/judicial_comment_bot.db --destination runtime/backups --keep 14
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/JudicialCommentBot/runtime

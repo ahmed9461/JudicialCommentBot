@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "judicial-comment-bot"
-version = "0.6.0"
+version = "1.0.0"
 description = "Telegram bot for Saudi judicial case research and academic commentary workflows."
 requires-python = ">=3.12"
 dependencies = [

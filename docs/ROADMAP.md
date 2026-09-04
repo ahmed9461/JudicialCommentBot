@@ -2,87 +2,63 @@
 
 ## المرحلة 0 — Foundation
 
-- [x] تثبيت اسم المشروع.
-- [x] تثبيت قرارات التخطيط.
-- [x] إنشاء ذاكرة المشروع.
-- [x] سياسة المصادر وPDF.
-- [x] Style Guide.
-- [x] مخطط البيانات.
-- [x] إنشاء ملفات معرفة جميع المواد كملفات مستقلة.
-- [ ] مراجعة خرائط المعرفة مقابل توصيفات المقررات الرسمية وتوثيق مصادرها.
+- [x] اسم المشروع وقرارات التخطيط وذاكرة المشروع.
+- [x] سياسة المصادر وPDF وStyle Guide ومخطط البيانات.
+- [x] ملفات معرفة جميع المواد مستقلة.
+- [ ] مراجعة خرائط المعرفة دورياً مقابل توصيفات المقررات الرسمية وتوثيقها.
 
 ## المرحلة 1 — Bot Shell & Auth
 
-- [x] Telegram bot skeleton.
-- [x] Owner-only افتراضياً.
-- [x] Allowlist management عبر Telegram ID.
-- [x] أزرار المواد من `knowledge/subjects/index.yaml`.
-- [x] إعدادات Pydantic وLogging.
-- [x] SQLite + migrations.
-- [x] اختبارات Authorization وKnowledge loading.
-- [x] CI أولي للتجميع والاختبارات.
+- [x] Telegram bot + Owner/Allowlist + أزرار المواد + SQLite + Logging + CI.
 
 ## المرحلة 2 — Research & Sources
 
-- [x] Research provider interface.
-- [x] DeepSeek Responses API client.
-- [x] DeepSeek server-side web search integration.
-- [x] candidate normalization إلى نموذج موحد.
-- [x] trusted-domain/source registry policy.
-- [x] بناء طلب البحث من ملف معرفة المادة.
-- [x] إرسال سجل القضايا السابقة كقائمة استبعاد للبحث.
-- [ ] Source adapters متخصصة عند الحاجة للمصادر التي تتطلب parsing مخصص.
-- [ ] اختبار تكامل حي بمفتاح DeepSeek حقيقي.
+- [x] Research provider وDeepSeek Responses API والبحث الويب والـstructured candidates.
+- [x] source registry وسياسة trusted domains وإرسال سجل الاستبعاد.
+- [ ] اختبار تكامل حي بمفتاح DeepSeek حقيقي في بيئة المستخدم.
 
 ## المرحلة 3 — PDF Acquisition
 
-- [x] direct PDF downloader للمصادر الرسمية المعتمدة.
-- [ ] official compilation detector وتحديد صفحات القضية تلقائياً.
-- [x] أداة استخراج page range من ملف مجموعة رسمي مع الحفاظ على صفحات الحكم.
-- [x] PDF magic + structural validation.
-- [x] SHA-256 أثناء التنزيل.
-- [ ] retry/fallback بين عدة مرشحين داخل orchestrator.
-- [x] HTTPS/domain/DNS SSRF protections مع إعادة فحص كل redirect.
+- [x] تنزيل PDF رسمي، SSRF/redirect protections، validation، SHA-256.
+- [x] اكتشاف صفحات القضية داخل مجموعة رسمية عند توفر رقم قضية قابل للتحقق.
+- [x] استخراج original page objects والتحقق من رقم القضية بعد الاستخراج.
+- [x] retry/fallback بين المرشحين.
 
 ## المرحلة 4 — Ranking & Deduplication
 
-- [ ] scoring engine.
-- [ ] auto-select threshold.
-- [ ] top-3 flow.
-- [ ] duplicate detection قبل وبعد تنزيل PDF.
-- [ ] سجل أسباب الاستبعاد.
+- [x] scoring engine بأوزان 40/20/15/15/10.
+- [x] auto-select threshold + margin وإلا top-3.
+- [x] duplicate detection قبل الإرسال برقم القضية+المحكمة أو SHA-256.
+- [x] قاعدة بيانات وسجل إداري.
 
 ## المرحلة 5 — Commentary & DOCX
 
-- [ ] استخراج نص الحكم.
-- [ ] structured AI output.
-- [ ] prompt templates.
-- [ ] DOCX RTL generator.
-- [ ] تكيف العناوين حسب المادة.
-- [ ] إعادة توليد التعليق.
+- [x] استخراج نص الحكم من PDF المتحقق.
+- [x] structured commentary generation.
+- [x] DOCX RTL مع عناوين متكيفة حسب المادة وترقيم صفحات.
+- [x] إعادة توليد التعليق.
 
 ## المرحلة 6 — Validation & Cleanup
 
-- [ ] جميع Validators.
-- [ ] إرسال PDF + DOCX.
-- [ ] cleanup بعد الإرسال.
-- [ ] stale temp cleanup.
-- [ ] logs وسجل الإدارة.
+- [x] Validators للنص وDOCX وPDF.
+- [x] إرسال PDF + DOCX ثم تسجيل القضية.
+- [x] حذف الملفات بعد الإرسال وstale cleanup.
+- [x] Admin history وaudit log.
 
 ## المرحلة 7 — Tests & Hardening
 
-- [ ] unit tests لكل خدمة.
-- [ ] integration tests لمسار كامل باستخدام fixtures محلية.
-- [x] اختبارات PDF validation وSSRF الأساسية.
-- [ ] اختبارات فشل PDF عبر الشبكة.
-- [ ] اختبارات التكرار.
-- [ ] اختبارات منع Markdown/AI mention.
-- [ ] اختبارات انقطاع Telegram وDeepSeek.
+- [x] اختبارات Authorization/Knowledge/PDF/Source policy/Ranking/Validation/Dedup/Cleanup.
+- [x] CI للتثبيت والتجميع والاختبارات.
+- [ ] Smoke test حي كامل مع Telegram + DeepSeek + قضية رسمية في بيئة المستخدم.
 
 ## المرحلة 8 — Deployment
 
-- [ ] Docker أو systemd حسب بيئة السيرفر.
-- [ ] backup لقاعدة البيانات.
-- [ ] health checks.
-- [ ] log rotation.
-- [ ] توثيق التحديث والرجوع لإصدار سابق.
+- [x] Dockerfile + Docker Compose.
+- [x] systemd service.
+- [x] health check.
+- [x] SQLite backup script + systemd timer.
+- [x] log rotation policy وتوثيق التحديث والرجوع.
+
+## شرط الإطلاق
+
+الشفرة جاهزة للإطلاق بعد نجاح CI. المتبقي خارج المستودع هو وضع أسرار المستخدم في `.env` ثم إجراء Smoke test حي واحد قبل الاعتماد التشغيلي.

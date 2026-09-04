@@ -8,7 +8,7 @@ import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 
 import httpx
 
@@ -49,46 +49,48 @@ class PdfAcquisitionService:
 
     async def acquire(self, url: str, *, suggested_name: str = "case") -> PdfArtifact:
         current_url = url
-        for redirect_count in range(self.max_redirects + 1):
-            await validate_pdf_url(current_url, self.source_registry)
-            response = await self._request(current_url)
-            if response.status_code in {301, 302, 303, 307, 308}:
-                location = response.headers.get("location")
-                await response.aclose()
-                if not location:
-                    raise PdfAcquisitionError("Redirect response has no Location header")
-                if redirect_count >= self.max_redirects:
-                    raise PdfAcquisitionError("Too many PDF redirects")
-                current_url = urljoin(current_url, location)
-                continue
-            if response.status_code >= 400:
-                status = response.status_code
-                await response.aclose()
-                raise PdfAcquisitionError(f"PDF download returned HTTP {status}")
-            return await self._save_response(response, current_url, suggested_name)
-        raise PdfAcquisitionError("PDF redirect loop")
-
-    async def _request(self, url: str) -> httpx.Response:
         timeout = httpx.Timeout(self.timeout_seconds)
-        client = httpx.AsyncClient(timeout=timeout, follow_redirects=False)
-        request = client.build_request(
-            "GET",
-            url,
-            headers={
-                "Accept": "application/pdf,application/octet-stream;q=0.9,*/*;q=0.1",
-                "User-Agent": "JudicialCommentBot/0.3 (+PDF acquisition)",
-            },
-        )
-        response = await client.send(request, stream=True)
-        response.extensions["_jcb_client"] = client
-        return response
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+            for redirect_count in range(self.max_redirects + 1):
+                await validate_pdf_url(current_url, self.source_registry)
+                request = client.build_request(
+                    "GET",
+                    current_url,
+                    headers={
+                        "Accept": "application/pdf,application/octet-stream;q=0.9,*/*;q=0.1",
+                        "User-Agent": "JudicialCommentBot/0.3 (+PDF acquisition)",
+                    },
+                )
+                response = await client.send(request, stream=True)
+                try:
+                    if response.status_code in {301, 302, 303, 307, 308}:
+                        location = response.headers.get("location")
+                        if not location:
+                            raise PdfAcquisitionError(
+                                "Redirect response has no Location header"
+                            )
+                        if redirect_count >= self.max_redirects:
+                            raise PdfAcquisitionError("Too many PDF redirects")
+                        current_url = urljoin(current_url, location)
+                        continue
+                    if response.status_code >= 400:
+                        raise PdfAcquisitionError(
+                            f"PDF download returned HTTP {response.status_code}"
+                        )
+                    return await self._save_response(
+                        response, current_url, suggested_name
+                    )
+                finally:
+                    await response.aclose()
+        raise PdfAcquisitionError("PDF redirect loop")
 
     async def _save_response(
         self, response: httpx.Response, source_url: str, suggested_name: str
     ) -> PdfArtifact:
-        client = response.extensions.get("_jcb_client")
         filename = _safe_filename(suggested_name)
-        fd, raw_path = tempfile.mkstemp(prefix=f"{filename}-", suffix=".pdf", dir=self.temp_dir)
+        fd, raw_path = tempfile.mkstemp(
+            prefix=f"{filename}-", suffix=".pdf", dir=self.temp_dir
+        )
         os.close(fd)
         path = Path(raw_path)
         digest = hashlib.sha256()
@@ -104,7 +106,9 @@ class PdfAcquisitionService:
                         first = chunk[:5]
                     size += len(chunk)
                     if size > self.max_bytes:
-                        raise PdfValidationError("PDF exceeds configured byte limit")
+                        raise PdfValidationError(
+                            "PDF exceeds configured byte limit"
+                        )
                     digest.update(chunk)
                     handle.write(chunk)
             if first != b"%PDF-":
@@ -120,10 +124,6 @@ class PdfAcquisitionService:
         except Exception:
             path.unlink(missing_ok=True)
             raise
-        finally:
-            await response.aclose()
-            if isinstance(client, httpx.AsyncClient):
-                await client.aclose()
 
 
 def _safe_filename(value: str) -> str:

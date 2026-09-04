@@ -36,12 +36,13 @@
 
 ## المرحلة 3 — PDF Acquisition
 
-- [ ] direct PDF downloader.
-- [ ] official compilation detector/extractor.
-- [ ] PDF validation.
-- [ ] SHA-256.
-- [ ] retry/fallback بين المصادر.
-- [ ] SSRF protections.
+- [x] direct PDF downloader للمصادر الرسمية المعتمدة.
+- [ ] official compilation detector وتحديد صفحات القضية تلقائياً.
+- [x] أداة استخراج page range من ملف مجموعة رسمي مع الحفاظ على صفحات الحكم.
+- [x] PDF magic + structural validation.
+- [x] SHA-256 أثناء التنزيل.
+- [ ] retry/fallback بين عدة مرشحين داخل orchestrator.
+- [x] HTTPS/domain/DNS SSRF protections مع إعادة فحص كل redirect.
 
 ## المرحلة 4 — Ranking & Deduplication
 
@@ -72,7 +73,8 @@
 
 - [ ] unit tests لكل خدمة.
 - [ ] integration tests لمسار كامل باستخدام fixtures محلية.
-- [ ] اختبارات فشل PDF.
+- [x] اختبارات PDF validation وSSRF الأساسية.
+- [ ] اختبارات فشل PDF عبر الشبكة.
 - [ ] اختبارات التكرار.
 - [ ] اختبارات منع Markdown/AI mention.
 - [ ] اختبارات انقطاع Telegram وDeepSeek.

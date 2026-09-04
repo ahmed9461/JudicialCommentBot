@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-v4-pro"
     deepseek_request_timeout_seconds: float = 120.0
+    deepseek_research_attempts: int = 2
 
     database_url: str = "sqlite+aiosqlite:///runtime/judicial_comment_bot.db"
     auto_accept_score: int = 90
@@ -25,6 +26,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     delete_files_after_send: bool = True
     stale_temp_max_age_hours: int = 6
+    progress_update_interval_seconds: float = 3.0
 
     pdf_max_bytes: int = 50 * 1024 * 1024
     pdf_max_pages: int = 1500
@@ -50,6 +52,20 @@ class Settings(BaseSettings):
     def validate_score(cls, value: int) -> int:
         if not 0 <= value <= 100:
             raise ValueError("AUTO_ACCEPT_SCORE must be between 0 and 100")
+        return value
+
+    @field_validator("deepseek_research_attempts", "search_retry_rounds")
+    @classmethod
+    def validate_positive_attempts(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("Retry/attempt counts must be at least 1")
+        return value
+
+    @field_validator("progress_update_interval_seconds")
+    @classmethod
+    def validate_progress_interval(cls, value: float) -> float:
+        if value < 1:
+            raise ValueError("PROGRESS_UPDATE_INTERVAL_SECONDS must be at least 1")
         return value
 
 

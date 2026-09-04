@@ -12,17 +12,34 @@ class Settings(BaseSettings):
 
     deepseek_api_key: SecretStr | None = None
     deepseek_base_url: str = "https://api.deepseek.com"
-    # Kept for backwards compatibility with existing .env files.
+    # Legacy fallback retained so existing .env files do not break.
     deepseek_model: str = "deepseek-v4-pro"
     deepseek_research_model: str = "deepseek-v4-flash"
     deepseek_commentary_model: str = "deepseek-v4-pro"
+
+    # Responses API calls are streamed. These are connection/idle timeouts, not
+    # total wall-clock deadlines. A healthy long-running web search is therefore
+    # not cancelled just because it takes more than N seconds overall.
+    deepseek_connect_timeout_seconds: float = 15.0
+    deepseek_stream_idle_timeout_seconds: float = 180.0
+
+    # Kept only for backwards-compatible parsing of older .env files. The app no
+    # longer uses them as total request deadlines.
     deepseek_request_timeout_seconds: float = 120.0
     deepseek_research_timeout_seconds: float = 75.0
     deepseek_commentary_timeout_seconds: float = 120.0
+
     deepseek_research_attempts: int = 1
     deepseek_synthesis_attempts: int = 1
-    deepseek_max_search_calls_for_synthesis: int = 5
+    deepseek_max_search_calls_for_synthesis: int = 6
     deepseek_preflight_ttl_seconds: float = 300.0
+
+    # DeepSeek V4 defaults to high reasoning if omitted. Search discovery does
+    # not need model reasoning, while structured ranking uses low reasoning and
+    # the final legal commentary keeps high reasoning quality.
+    deepseek_research_reasoning_effort: str = "none"
+    deepseek_synthesis_reasoning_effort: str = "low"
+    deepseek_commentary_reasoning_effort: str = "high"
 
     database_url: str = "sqlite+aiosqlite:///runtime/judicial_comment_bot.db"
     auto_accept_score: int = 90
@@ -78,6 +95,8 @@ class Settings(BaseSettings):
 
     @field_validator(
         "progress_update_interval_seconds",
+        "deepseek_connect_timeout_seconds",
+        "deepseek_stream_idle_timeout_seconds",
         "deepseek_request_timeout_seconds",
         "deepseek_research_timeout_seconds",
         "deepseek_commentary_timeout_seconds",
@@ -90,6 +109,19 @@ class Settings(BaseSettings):
         if value < 1:
             raise ValueError("Timeout/interval values must be at least 1 second")
         return value
+
+    @field_validator(
+        "deepseek_research_reasoning_effort",
+        "deepseek_synthesis_reasoning_effort",
+        "deepseek_commentary_reasoning_effort",
+    )
+    @classmethod
+    def validate_reasoning_effort(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        allowed = {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+        if normalized not in allowed:
+            raise ValueError(f"Unsupported DeepSeek reasoning effort: {value}")
+        return normalized
 
 
 @lru_cache(maxsize=1)

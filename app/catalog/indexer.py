@@ -34,7 +34,10 @@ from .text import (
 )
 
 logger = logging.getLogger(__name__)
-_CASE_MARKER = re.compile(r"(?:رقم\s+(?:القضية|الدعوى)|القضية\s+رقم)", re.I)
+_CASE_MARKER = re.compile(
+    r"(?:رقم\s+(?:القضية|الدعوى|القرار)|(?:القضية|الدعوى|القرار)\s+رقم)",
+    re.I,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,7 +96,12 @@ class OfficialCatalogIndexer:
                     count, pdf_sha256 = await self._index_document(spec, document_id, url)
                 except Exception as exc:
                     documents_failed += 1
-                    logger.warning("Catalog document failed id=%s url=%s reason=%s", document_id, url, exc)
+                    logger.warning(
+                        "Catalog document failed id=%s url=%s reason=%s",
+                        document_id,
+                        url,
+                        exc,
+                    )
                 else:
                     documents_indexed += 1
                     cases_indexed += count
@@ -140,7 +148,10 @@ class OfficialCatalogIndexer:
                 if classification.source_id != spec.source_id:
                     continue
                 try:
-                    response = await client.get(url, headers={"User-Agent": "JudicialCommentBot/1.0 catalog-indexer"})
+                    response = await client.get(
+                        url,
+                        headers={"User-Agent": "JudicialCommentBot/1.0 catalog-indexer"},
+                    )
                     response.raise_for_status()
                 except httpx.HTTPError as exc:
                     logger.info("Catalog landing page skipped url=%s reason=%s", url, exc)
@@ -171,11 +182,19 @@ class OfficialCatalogIndexer:
                     else:
                         queue.append((absolute, depth + 1))
         return [
-            (f"{spec.id}:crawl:{hashlib.sha256(url.encode('utf-8')).hexdigest()[:16]}", url)
+            (
+                f"{spec.id}:crawl:{hashlib.sha256(url.encode('utf-8')).hexdigest()[:16]}",
+                url,
+            )
             for url in sorted(pdfs)
         ]
 
-    async def _index_document(self, spec: CatalogSourceSpec, document_id: str, url: str) -> tuple[int, str]:
+    async def _index_document(
+        self,
+        spec: CatalogSourceSpec,
+        document_id: str,
+        url: str,
+    ) -> tuple[int, str]:
         if not self.source_registry.can_be_original_pdf_source(url):
             raise ValueError(f"Catalog document is not an approved official PDF source: {url}")
         try:
@@ -187,48 +206,59 @@ class OfficialCatalogIndexer:
             page_texts = [(page.extract_text() or "").strip() for page in reader.pages]
             starts = self._case_starts(page_texts)
             if not starts:
+                # A successfully read but non-case publication should not wipe an
+                # existing collection snapshot on force-refresh.
                 logger.info("No conservative case boundaries detected in %s", url)
                 return 0, artifact.sha256
 
-            await self.store.remove_collection(document_id)
-            indexed = 0
+            parsed_cases: list[CatalogCase] = []
             for position, start_index in enumerate(starts):
                 next_start = starts[position + 1] if position + 1 < len(starts) else len(page_texts)
-                # A single judgment in official collections should not swallow a very
-                # large trailing index if no following boundary was detected.
+                # A single judgment in official collections should not swallow a
+                # very large trailing index if no following boundary was detected.
                 end_index = min(next_start, start_index + 80)
                 combined = "\n".join(page_texts[start_index:end_index]).strip()
                 if len(combined) < self.manifest.min_case_text_chars:
                     continue
-                case_number = detect_case_number(page_texts[start_index]) or detect_case_number(combined[:7000])
+                case_number = detect_case_number(page_texts[start_index]) or detect_case_number(
+                    combined[:7000]
+                )
                 if not case_number:
                     continue
                 court_name = detect_court_name(combined)
                 year = detect_judgment_year(combined)
                 text = combined[: self.manifest.max_case_text_chars]
                 page_start = start_index + 1
+                # end_index is the exclusive zero-based boundary; numerically it
+                # is also the inclusive 1-based page number of the preceding page.
                 page_end = end_index
                 key_material = f"{url}|{case_number}|{page_start}|{page_end}".encode("utf-8")
                 catalog_key = hashlib.sha256(key_material).hexdigest()
-                case = CatalogCase(
-                    catalog_key=catalog_key,
-                    collection_id=document_id,
-                    source_id=spec.source_id,
-                    source_name=spec.source_name,
-                    source_url=url,
-                    pdf_url=url,
-                    pdf_sha256=artifact.sha256,
-                    page_start=page_start,
-                    page_end=page_end,
-                    title=make_title(page_texts[start_index], case_number),
-                    case_number=case_number,
-                    court_name=court_name,
-                    judgment_year=year,
-                    text=text,
-                    normalized_text=normalize_arabic(text),
+                parsed_cases.append(
+                    CatalogCase(
+                        catalog_key=catalog_key,
+                        collection_id=document_id,
+                        source_id=spec.source_id,
+                        source_name=spec.source_name,
+                        source_url=url,
+                        pdf_url=url,
+                        pdf_sha256=artifact.sha256,
+                        page_start=page_start,
+                        page_end=page_end,
+                        title=make_title(page_texts[start_index], case_number),
+                        case_number=case_number,
+                        court_name=court_name,
+                        judgment_year=year,
+                        text=text,
+                        normalized_text=normalize_arabic(text),
+                    )
                 )
-                await self.store.upsert(case)
-                indexed += 1
+
+            if not parsed_cases:
+                logger.info("No usable judgments remained after parsing %s", url)
+                return 0, artifact.sha256
+
+            indexed = await self.store.replace_collection(document_id, parsed_cases)
             logger.info("Indexed %d cases from official document %s", indexed, url)
             return indexed, artifact.sha256
         finally:
@@ -250,7 +280,19 @@ class OfficialCatalogIndexer:
             if not case_number:
                 continue
             normalized = normalize_arabic(sample)
-            legal_signal = any(token in normalized for token in ("الحكم", "الدائره", "المدعي", "المدعى", "المتهم", "المحكمه"))
+            legal_signal = any(
+                token in normalized
+                for token in (
+                    "الحكم",
+                    "القرار",
+                    "الدائره",
+                    "اللجنه",
+                    "المدعي",
+                    "المدعى",
+                    "المتهم",
+                    "المحكمه",
+                )
+            )
             if not legal_signal:
                 continue
             if case_number == previous_case:

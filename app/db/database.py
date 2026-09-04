@@ -90,3 +90,25 @@ class Database:
             )
             rows = await cursor.fetchall()
             return [int(row[0]) for row in rows]
+
+    async def used_cases_for_subject(self, subject_slug: str) -> list[dict[str, str | None]]:
+        async with self._connect() as db:
+            cursor = await db.execute(
+                """
+                SELECT case_number, court_name, source_url
+                FROM case_history
+                WHERE subject_slug = ?
+                ORDER BY used_at DESC
+                LIMIT 100
+                """,
+                (subject_slug,),
+            )
+            rows = await cursor.fetchall()
+            return [
+                {
+                    "case_number": row[0],
+                    "court_name": row[1],
+                    "source_url": row[2],
+                }
+                for row in rows
+            ]

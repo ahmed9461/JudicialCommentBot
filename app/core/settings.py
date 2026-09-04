@@ -11,8 +11,9 @@ class Settings(BaseSettings):
     owner_telegram_id: int
 
     deepseek_api_key: SecretStr | None = None
-    deepseek_base_url: str = ""
-    deepseek_model: str = ""
+    deepseek_base_url: str = "https://api.deepseek.com"
+    deepseek_model: str = "deepseek-v4-pro"
+    deepseek_request_timeout_seconds: float = 120.0
 
     database_url: str = "sqlite+aiosqlite:///runtime/judicial_comment_bot.db"
     auto_accept_score: int = 90

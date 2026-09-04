@@ -1,7 +1,13 @@
 import json
 
+import pytest
+
 from app.knowledge import SubjectLoader
-from app.research.deepseek import extract_output_text
+from app.research.deepseek import (
+    describe_empty_response,
+    extract_output_text,
+    extract_web_search_calls,
+)
 from app.research.prompt import build_search_input
 
 
@@ -21,6 +27,28 @@ def test_extract_output_text_from_responses_payload() -> None:
         ]
     }
     assert json.loads(extract_output_text(payload)) == {"candidates": []}
+
+
+def test_search_only_response_is_detected_for_continuation() -> None:
+    payload = {
+        "status": "completed",
+        "output": [
+            {
+                "type": "web_search_call",
+                "id": "ws_1",
+                "status": "completed",
+                "action": {"type": "search", "query": "حكم قضائي سعودي"},
+            }
+        ],
+    }
+    calls = extract_web_search_calls(payload)
+    assert len(calls) == 1
+    assert calls[0]["id"] == "ws_1"
+    with pytest.raises(ValueError, match="output_types"):
+        extract_output_text(payload)
+    description = describe_empty_response(payload)
+    assert "web_search_call" in description
+    assert "status=completed" in description
 
 
 def test_search_prompt_uses_subject_knowledge_and_exclusions() -> None:

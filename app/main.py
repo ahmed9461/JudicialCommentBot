@@ -17,7 +17,7 @@ from app.db import Database
 from app.knowledge import SubjectLoader
 from app.pdf import PdfAcquisitionService
 from app.ranking import ScoringPolicy
-from app.research import DeepSeekResearchProvider
+from app.research import DeepSeekResearchProvider, RobustResearchProvider
 from app.services import (
     AccessService, AssignmentService, CaseWorkflowService, cleanup_stale_files,
 )
@@ -46,7 +46,7 @@ async def run() -> None:
     assignment_service = None
     if settings.deepseek_api_key and settings.deepseek_api_key.get_secret_value().strip():
         api_key = settings.deepseek_api_key.get_secret_value()
-        research_provider = DeepSeekResearchProvider(
+        deepseek_research = DeepSeekResearchProvider(
             api_key=api_key,
             base_url=settings.deepseek_base_url,
             model=settings.deepseek_research_model,
@@ -54,6 +54,13 @@ async def run() -> None:
             request_attempts=settings.deepseek_research_attempts,
             synthesis_attempts=settings.deepseek_synthesis_attempts,
             max_search_calls_for_synthesis=settings.deepseek_max_search_calls_for_synthesis,
+        )
+        research_provider = RobustResearchProvider(
+            inner=deepseek_research,
+            api_key=api_key,
+            base_url=settings.deepseek_base_url,
+            model=settings.deepseek_research_model,
+            preflight_ttl_seconds=settings.deepseek_preflight_ttl_seconds,
         )
         commentary_generator = DeepSeekCommentaryGenerator(
             api_key=api_key,

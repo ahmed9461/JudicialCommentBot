@@ -1,8 +1,4 @@
-"""Small versioned SQLite migration set.
-
-A lightweight migration runner is enough for the current single-service SQLite
-architecture and keeps schema changes explicit and testable.
-"""
+"""Versioned SQLite schema migrations."""
 
 MIGRATIONS: dict[int, str] = {
     1: """
@@ -25,9 +21,26 @@ MIGRATIONS: dict[int, str] = {
         UNIQUE(case_number, court_name, pdf_sha256)
     );
 
-    CREATE INDEX IF NOT EXISTS idx_case_history_subject
-        ON case_history(subject_slug);
-    CREATE INDEX IF NOT EXISTS idx_case_history_sha256
-        ON case_history(pdf_sha256);
+    CREATE INDEX IF NOT EXISTS idx_case_history_subject ON case_history(subject_slug);
+    CREATE INDEX IF NOT EXISTS idx_case_history_sha256 ON case_history(pdf_sha256);
+    """,
+    2: """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_case_history_unique_sha
+        ON case_history(pdf_sha256)
+        WHERE pdf_sha256 IS NOT NULL AND pdf_sha256 <> '';
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_case_history_unique_case_court
+        ON case_history(case_number, court_name)
+        WHERE case_number IS NOT NULL AND case_number <> ''
+          AND court_name IS NOT NULL AND court_name <> '';
+
+    CREATE TABLE IF NOT EXISTS audit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_type TEXT NOT NULL,
+        subject_slug TEXT,
+        case_number TEXT,
+        details TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at);
     """,
 }

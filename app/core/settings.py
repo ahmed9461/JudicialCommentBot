@@ -19,21 +19,23 @@ class Settings(BaseSettings):
     auto_accept_score: int = 90
     candidate_display_count: int = 3
     search_candidate_limit: int = 8
+    search_retry_rounds: int = 2
 
     temp_dir: str = "runtime/tmp"
     log_level: str = "INFO"
     delete_files_after_send: bool = True
+    stale_temp_max_age_hours: int = 6
 
     pdf_max_bytes: int = 50 * 1024 * 1024
     pdf_max_pages: int = 1500
     pdf_download_timeout_seconds: float = 90.0
     pdf_max_redirects: int = 5
+    compilation_page_threshold: int = 60
+    commentary_input_max_chars: int = 70000
+    commentary_min_text_chars: int = 500
 
     model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        case_sensitive=False,
-        extra="ignore",
+        env_file=".env", env_file_encoding="utf-8", case_sensitive=False, extra="ignore"
     )
 
     @field_validator("owner_telegram_id")

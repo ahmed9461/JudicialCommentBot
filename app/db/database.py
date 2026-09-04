@@ -18,97 +18,112 @@ class Database:
     def _sqlite_path(url: str) -> str:
         for prefix in ("sqlite+aiosqlite:///", "sqlite:///"):
             if url.startswith(prefix):
-                return url[len(prefix) :]
+                return url[len(prefix):]
         if url == ":memory:":
             return url
-        raise ValueError("Only SQLite database URLs are supported in this phase")
+        raise ValueError("Only SQLite database URLs are supported")
+
+    def _connect(self) -> aiosqlite.Connection:
+        return aiosqlite.connect(self.path)
 
     async def initialize(self) -> None:
         if self.path != ":memory:":
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-
         async with self._connect() as db:
             await db.execute("PRAGMA foreign_keys = ON")
             if self.path != ":memory:":
                 await db.execute("PRAGMA journal_mode = WAL")
             await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS schema_migrations (
-                    version INTEGER PRIMARY KEY,
-                    applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )
-                """
+                "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
             )
             await db.commit()
-
-            cursor = await db.execute(
-                "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
-            )
+            cursor = await db.execute("SELECT COALESCE(MAX(version), 0) FROM schema_migrations")
             current = int((await cursor.fetchone())[0])
-
             for version in sorted(MIGRATIONS):
                 if version <= current:
                     continue
                 await db.executescript(MIGRATIONS[version])
-                await db.execute(
-                    "INSERT INTO schema_migrations(version) VALUES (?)", (version,)
-                )
+                await db.execute("INSERT INTO schema_migrations(version) VALUES (?)", (version,))
                 await db.commit()
-
-    def _connect(self) -> aiosqlite.Connection:
-        return aiosqlite.connect(self.path)
 
     async def is_allowed_user(self, telegram_id: int) -> bool:
         async with self._connect() as db:
-            cursor = await db.execute(
-                "SELECT 1 FROM allowed_users WHERE telegram_id = ? LIMIT 1",
-                (telegram_id,),
-            )
+            cursor = await db.execute("SELECT 1 FROM allowed_users WHERE telegram_id = ? LIMIT 1", (telegram_id,))
             return await cursor.fetchone() is not None
 
     async def add_allowed_user(self, telegram_id: int, added_by: int) -> bool:
         async with self._connect() as db:
-            cursor = await db.execute(
-                "INSERT OR IGNORE INTO allowed_users(telegram_id, added_by) VALUES (?, ?)",
-                (telegram_id, added_by),
-            )
+            cursor = await db.execute("INSERT OR IGNORE INTO allowed_users(telegram_id, added_by) VALUES (?, ?)", (telegram_id, added_by))
             await db.commit()
             return cursor.rowcount > 0
 
     async def remove_allowed_user(self, telegram_id: int) -> bool:
         async with self._connect() as db:
-            cursor = await db.execute(
-                "DELETE FROM allowed_users WHERE telegram_id = ?", (telegram_id,)
-            )
+            cursor = await db.execute("DELETE FROM allowed_users WHERE telegram_id = ?", (telegram_id,))
             await db.commit()
             return cursor.rowcount > 0
 
     async def list_allowed_users(self) -> list[int]:
         async with self._connect() as db:
-            cursor = await db.execute(
-                "SELECT telegram_id FROM allowed_users ORDER BY created_at, telegram_id"
-            )
-            rows = await cursor.fetchall()
-            return [int(row[0]) for row in rows]
+            cursor = await db.execute("SELECT telegram_id FROM allowed_users ORDER BY created_at, telegram_id")
+            return [int(row[0]) for row in await cursor.fetchall()]
 
     async def used_cases_for_subject(self, subject_slug: str) -> list[dict[str, str | None]]:
         async with self._connect() as db:
             cursor = await db.execute(
-                """
-                SELECT case_number, court_name, source_url
-                FROM case_history
-                WHERE subject_slug = ?
-                ORDER BY used_at DESC
-                LIMIT 100
-                """,
+                "SELECT case_number, court_name, source_url FROM case_history WHERE subject_slug = ? ORDER BY used_at DESC LIMIT 200",
                 (subject_slug,),
+            )
+            return [
+                {"case_number": row[0], "court_name": row[1], "source_url": row[2]}
+                for row in await cursor.fetchall()
+            ]
+
+    async def is_case_used(self, *, case_number: str | None, court_name: str | None, pdf_sha256: str | None) -> bool:
+        clauses: list[str] = []
+        params: list[str] = []
+        if pdf_sha256:
+            clauses.append("pdf_sha256 = ?")
+            params.append(pdf_sha256)
+        if case_number and court_name:
+            clauses.append("(LOWER(TRIM(case_number)) = LOWER(TRIM(?)) AND LOWER(TRIM(court_name)) = LOWER(TRIM(?)))")
+            params.extend([case_number, court_name])
+        if not clauses:
+            return False
+        async with self._connect() as db:
+            cursor = await db.execute(f"SELECT 1 FROM case_history WHERE {' OR '.join(clauses)} LIMIT 1", params)
+            return await cursor.fetchone() is not None
+
+    async def record_case(self, *, subject_slug: str, case_number: str | None, court_name: str | None, source_name: str | None, source_url: str | None, pdf_sha256: str, suitability_score: int) -> bool:
+        async with self._connect() as db:
+            cursor = await db.execute(
+                """INSERT OR IGNORE INTO case_history(subject_slug, case_number, court_name, source_name, source_url, pdf_sha256, suitability_score)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (subject_slug, case_number, court_name, source_name, source_url, pdf_sha256, suitability_score),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def add_audit(self, event_type: str, *, subject_slug: str | None = None, case_number: str | None = None, details: str | None = None) -> None:
+        async with self._connect() as db:
+            await db.execute(
+                "INSERT INTO audit_log(event_type, subject_slug, case_number, details) VALUES (?, ?, ?, ?)",
+                (event_type, subject_slug, case_number, details),
+            )
+            await db.commit()
+
+    async def recent_history(self, limit: int = 20) -> list[dict[str, object]]:
+        async with self._connect() as db:
+            cursor = await db.execute(
+                """SELECT subject_slug, case_number, court_name, source_name, source_url, suitability_score, used_at
+                   FROM case_history ORDER BY used_at DESC LIMIT ?""",
+                (max(1, min(limit, 100)),),
             )
             rows = await cursor.fetchall()
             return [
                 {
-                    "case_number": row[0],
-                    "court_name": row[1],
-                    "source_url": row[2],
+                    "subject_slug": row[0], "case_number": row[1], "court_name": row[2],
+                    "source_name": row[3], "source_url": row[4], "suitability_score": row[5], "used_at": row[6]
                 }
                 for row in rows
             ]

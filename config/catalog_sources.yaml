@@ -26,10 +26,11 @@ sources:
     enabled: true
     landing_pages:
       - https://www.bog.gov.sa/knowledge-center/JudicialBlogs/Pages/JudgmentsDefault.aspx
-    max_depth: 2
-    max_pages: 160
+    max_depth: 3
+    max_pages: 220
     allowed_path_prefixes:
       - /knowledge-center/JudicialBlogs/
+      - /ScientificContent/JudicialBlogs/
     pdf_only: true
 
   - id: gstc_decisions

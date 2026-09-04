@@ -4,6 +4,7 @@ import pytest
 
 from app.knowledge import SubjectLoader
 from app.research.deepseek import (
+    DeepSeekResearchProvider,
     describe_empty_response,
     extract_output_text,
     extract_web_search_calls,
@@ -88,6 +89,56 @@ def test_truncated_json_recovers_only_complete_candidates() -> None:
     assert [item.case_number for item in candidates] == ["111"]
 
 
+@pytest.mark.asyncio
+async def test_malformed_synthesis_does_not_repeat_paid_web_search(monkeypatch) -> None:
+    provider = DeepSeekResearchProvider(
+        api_key="fixture",
+        base_url="https://api.deepseek.test",
+        model="deepseek-v4-flash",
+        request_attempts=2,
+        synthesis_attempts=2,
+    )
+    payloads: list[dict] = []
+    replies = [
+        {
+            "status": "completed",
+            "output": [
+                {
+                    "type": "web_search_call",
+                    "id": "ws_1",
+                    "status": "completed",
+                    "action": {"type": "search", "query": "حكم دستوري سعودي"},
+                }
+            ],
+            "usage": {"input_tokens": 10, "output_tokens": 10, "total_tokens": 20},
+        },
+        {
+            "status": "completed",
+            "output_text": '{"candidates":[{"title":"مقطوع',
+            "usage": {"input_tokens": 20, "output_tokens": 10, "total_tokens": 30},
+        },
+        {
+            "status": "completed",
+            "output_text": json.dumps(
+                {"candidates": [_candidate_payload("333")]}, ensure_ascii=False
+            ),
+            "usage": {"input_tokens": 20, "output_tokens": 20, "total_tokens": 40},
+        },
+    ]
+
+    async def fake_post(payload: dict) -> dict:
+        payloads.append(payload)
+        return replies.pop(0)
+
+    monkeypatch.setattr(provider, "_post", fake_post)
+    subject = SubjectLoader().get_subject("constitutional_law")
+    result = await provider.search_cases(subject, excluded_cases=[], limit=5)
+
+    assert [item.case_number for item in result] == ["333"]
+    assert len(payloads) == 3
+    assert sum(1 for payload in payloads if payload.get("tools")) == 1
+
+
 def test_search_prompt_uses_subject_knowledge_and_exclusions() -> None:
     subject = SubjectLoader().get_subject("law_intro")
     prompt = build_search_input(
@@ -103,4 +154,4 @@ def test_search_prompt_uses_subject_knowledge_and_exclusions() -> None:
     )
     assert "التعسف في استعمال الحق" in prompt
     assert "رقم القضية: 123" in prompt
-    assert "حتى 8 مرشحين" in prompt
+    assert "أفضل 8 مرشحين" in prompt

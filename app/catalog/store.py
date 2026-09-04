@@ -71,6 +71,40 @@ class CatalogStore:
             await db.commit()
             return max(0, cursor.rowcount)
 
+    async def is_document_indexed(self, source_url: str) -> bool:
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "SELECT 1 FROM catalog_documents WHERE source_url = ? LIMIT 1",
+                (source_url,),
+            )
+            return await cursor.fetchone() is not None
+
+    async def record_document(
+        self,
+        *,
+        source_url: str,
+        collection_id: str,
+        source_id: str,
+        pdf_sha256: str | None,
+        case_count: int,
+    ) -> None:
+        async with self._connect() as db:
+            await db.execute(
+                """
+                INSERT INTO catalog_documents(
+                    source_url, collection_id, source_id, pdf_sha256, case_count, indexed_at
+                ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(source_url) DO UPDATE SET
+                    collection_id=excluded.collection_id,
+                    source_id=excluded.source_id,
+                    pdf_sha256=excluded.pdf_sha256,
+                    case_count=excluded.case_count,
+                    indexed_at=CURRENT_TIMESTAMP
+                """,
+                (source_url, collection_id, source_id, pdf_sha256, max(0, int(case_count))),
+            )
+            await db.commit()
+
     async def search(
         self,
         terms: list[str],

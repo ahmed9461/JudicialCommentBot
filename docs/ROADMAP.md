@@ -24,12 +24,15 @@
 
 ## المرحلة 2 — Research & Sources
 
-- [ ] Research provider interface.
-- [ ] DeepSeek client.
-- [ ] Source adapters.
-- [ ] candidate normalization.
-- [ ] trusted-domain policy.
-- [ ] البحث بكلمات ملف المادة.
+- [x] Research provider interface.
+- [x] DeepSeek Responses API client.
+- [x] DeepSeek server-side web search integration.
+- [x] candidate normalization إلى نموذج موحد.
+- [x] trusted-domain/source registry policy.
+- [x] بناء طلب البحث من ملف معرفة المادة.
+- [x] إرسال سجل القضايا السابقة كقائمة استبعاد للبحث.
+- [ ] Source adapters متخصصة عند الحاجة للمصادر التي تتطلب parsing مخصص.
+- [ ] اختبار تكامل حي بمفتاح DeepSeek حقيقي.
 
 ## المرحلة 3 — PDF Acquisition
 

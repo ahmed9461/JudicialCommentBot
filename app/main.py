@@ -47,8 +47,11 @@ async def run() -> None:
     if settings.deepseek_api_key and settings.deepseek_api_key.get_secret_value().strip():
         api_key = settings.deepseek_api_key.get_secret_value()
         research_provider = DeepSeekResearchProvider(
-            api_key=api_key, base_url=settings.deepseek_base_url,
-            model=settings.deepseek_model, timeout_seconds=settings.deepseek_request_timeout_seconds,
+            api_key=api_key,
+            base_url=settings.deepseek_base_url,
+            model=settings.deepseek_model,
+            timeout_seconds=settings.deepseek_request_timeout_seconds,
+            request_attempts=settings.deepseek_research_attempts,
         )
         commentary_generator = DeepSeekCommentaryGenerator(
             api_key=api_key, base_url=settings.deepseek_base_url,

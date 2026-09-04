@@ -20,8 +20,9 @@ class Settings(BaseSettings):
     deepseek_research_timeout_seconds: float = 75.0
     deepseek_commentary_timeout_seconds: float = 120.0
     deepseek_research_attempts: int = 1
-    deepseek_synthesis_attempts: int = 2
-    deepseek_max_search_calls_for_synthesis: int = 8
+    deepseek_synthesis_attempts: int = 1
+    deepseek_max_search_calls_for_synthesis: int = 5
+    deepseek_preflight_ttl_seconds: float = 300.0
 
     database_url: str = "sqlite+aiosqlite:///runtime/judicial_comment_bot.db"
     auto_accept_score: int = 90
@@ -80,6 +81,7 @@ class Settings(BaseSettings):
         "deepseek_request_timeout_seconds",
         "deepseek_research_timeout_seconds",
         "deepseek_commentary_timeout_seconds",
+        "deepseek_preflight_ttl_seconds",
         "pdf_download_timeout_seconds",
         "pdf_connect_timeout_seconds",
     )

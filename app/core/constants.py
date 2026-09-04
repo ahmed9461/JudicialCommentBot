@@ -1,40 +1,24 @@
-"""Project defaults that are not secrets.
+"""Stable application constants.
 
-Deploy-specific values belong in environment variables/settings, not here.
+Deploy-specific configuration belongs in environment variables, not here.
 """
 
-AUTO_ACCEPT_SCORE_DEFAULT = 90
-CANDIDATE_DISPLAY_COUNT_DEFAULT = 3
-SEARCH_CANDIDATE_LIMIT_DEFAULT = 8
+SUBJECTS_PAGE_SIZE = 8
+MAX_ALLOWED_USERS_DISPLAY = 100
 
-SOURCE_PRIORITY = (
-    "ministry_of_justice",
-    "board_of_grievances",
-    "official_quasi_judicial",
-    "tashree_discovery",
-    "other_trusted",
-)
+CALLBACK_HOME = "menu:home"
+CALLBACK_SUBJECTS_PREFIX = "subjects:page:"
+CALLBACK_SUBJECT_PREFIX = "subject:"
+CALLBACK_SEARCH_PREFIX = "case_search:"
 
-ALLOWED_PDF_ORIGIN_TYPES = {
-    "direct_official_pdf",
-    "official_compilation_extract",
-}
+UNAUTHORIZED_MESSAGE = "⛔ هذا البوت خاص ولا تملك صلاحية استخدامه."
 
-FORBIDDEN_COMMENTARY_TOKENS = (
+FORBIDDEN_OUTPUT_MARKERS = (
     "##",
     "**",
+    "```",
     "ChatGPT",
     "DeepSeek",
     "ذكاء اصطناعي",
-    "كذكاء اصطناعي",
-    "تم إنشاء هذا التعليق",
-    "بناءً على طلب المستخدم",
-    "كمساعد",
-)
-
-COMMENTARY_SECTIONS = (
-    "facts_and_course_link",
-    "legal_issue",
-    "court_reasoning",
-    "comment_and_opinion",
+    "Artificial Intelligence",
 )

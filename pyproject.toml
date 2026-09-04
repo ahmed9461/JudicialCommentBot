@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "judicial-comment-bot"
+version = "0.1.0"
+description = "Telegram bot for Saudi judicial case research and academic commentary workflows."
+requires-python = ">=3.12"
+dependencies = [
+  "aiogram>=3.13,<4",
+  "aiosqlite>=0.20,<1",
+  "pydantic-settings>=2.6,<3",
+  "PyYAML>=6.0,<7",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<9",
+  "pytest-asyncio>=0.24,<1",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]
+testpaths = ["tests"]

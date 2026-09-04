@@ -1,0 +1,31 @@
+slug: insurance_law
+name_ar: قانون التأمين
+verification_status: needs_official_syllabus_review
+source_notes: يفضل نزاع عقد تأمين أو تغطية أو استثناء أو تعويض تأميني واضح.
+priority_topics:
+  - عقد التأمين وأطرافه
+  - الخطر المؤمن منه
+  - التغطية والاستثناءات
+  - التزام المؤمن بالتعويض
+  - واجبات المؤمن له
+secondary_topics:
+  - التأمين الإلزامي
+  - الحلول والرجوع بحسب المقرر
+suitable_case_patterns:
+  - رفض شركة تأمين تغطية حادث مع نزاع حول شرط أو استثناء
+  - تقدير تعويض تأميني
+  - نزاع حول الإفصاح أو الخطر المؤمن عليه
+avoid_case_patterns:
+  - مسؤولية مدنية لا تتضمن علاقة تأمين مؤثرة
+search_keywords:
+  - تغطية تأمينية
+  - شركة التأمين
+  - استثناءات وثيقة التأمين
+  - تعويض تأميني
+  - عقد التأمين
+commentary_focus:
+  - تفسير نطاق التغطية
+  - تحليل الشرط أو الاستثناء
+  - تحديد التزامات المؤمن والمؤمن له
+preferred_source_hints: [official_insurance, official]
+scoring_hints: {direct_topic_match_bonus: 16, weak_relation_penalty: 13}

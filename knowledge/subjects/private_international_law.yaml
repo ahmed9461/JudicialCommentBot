@@ -1,0 +1,29 @@
+slug: private_international_law
+name_ar: القانون الدولي الخاص
+verification_status: needs_official_syllabus_review
+source_notes: يفضل حكم محلي بعنصر أجنبي واضح يتناول الاختصاص أو القانون الواجب التطبيق أو تنفيذ حكم أجنبي.
+priority_topics:
+  - تنازع القوانين
+  - الاختصاص القضائي الدولي
+  - الجنسية والموطن بحسب نطاق المقرر
+  - الاعتراف بالأحكام الأجنبية وتنفيذها
+secondary_topics:
+  - النظام العام
+  - تكييف العلاقة ذات العنصر الأجنبي
+suitable_case_patterns:
+  - طلب تنفيذ حكم أجنبي
+  - نزاع عقد أو أسرة بعنصر أجنبي مع مسألة اختصاص أو قانون واجب التطبيق
+avoid_case_patterns:
+  - قضية دولية عامة بين دول أو جهات سيادية
+search_keywords:
+  - تنفيذ حكم أجنبي
+  - اختصاص قضائي دولي
+  - تنازع القوانين
+  - قانون واجب التطبيق
+  - عنصر أجنبي
+commentary_focus:
+  - تحديد العنصر الأجنبي
+  - تحليل قاعدة الإسناد أو الاختصاص
+  - بيان أثر النظام العام أو شروط الاعتراف عند صلتها
+preferred_source_hints: [official]
+scoring_hints: {direct_topic_match_bonus: 16, weak_relation_penalty: 15}

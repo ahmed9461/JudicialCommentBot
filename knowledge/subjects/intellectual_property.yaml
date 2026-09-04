@@ -1,0 +1,30 @@
+slug: intellectual_property
+name_ar: الملكية الفكرية
+verification_status: needs_official_syllabus_review
+source_notes: الأولوية لأحكام أو قرارات رسمية في العلامات أو حقوق المؤلف أو البراءات بحسب نطاق المقرر.
+priority_topics:
+  - العلامات التجارية
+  - حقوق المؤلف والحقوق المجاورة
+  - براءات الاختراع
+  - الحماية المدنية والإدارية للحقوق الفكرية
+secondary_topics:
+  - المنافسة المرتبطة بالعلامة
+  - الترخيص والتنازل
+suitable_case_patterns:
+  - نزاع تشابه علامة أو تعدٍ عليها
+  - قضية نسخ أو استغلال مصنف دون حق
+  - نزاع حول تسجيل أو حماية حق فكري
+avoid_case_patterns:
+  - نزاع تجاري عام لا يدور حول حق ملكية فكرية
+search_keywords:
+  - علامة تجارية
+  - تشابه العلامات
+  - حقوق المؤلف
+  - تعدي على مصنف
+  - براءة اختراع
+commentary_focus:
+  - تحديد الحق الفكري محل الحماية
+  - تحليل معيار التعدي أو التشابه أو الاستحقاق
+  - بيان نوع الحماية والجزاء
+preferred_source_hints: [official_ip, official]
+scoring_hints: {direct_topic_match_bonus: 16, weak_relation_penalty: 13}

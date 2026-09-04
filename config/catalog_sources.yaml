@@ -60,6 +60,21 @@ sources:
       - /ar/Principles/
     pdf_only: true
 
+  - id: idc_decisions
+    source_id: insurance_disputes
+    source_name: الأمانة العامة للجان الفصل في المنازعات والمخالفات التأمينية
+    kind: landing_page_crawl
+    enabled: true
+    landing_pages:
+      - https://www.idc.gov.sa/ar-sa/CommitteesDecisions/Pages/Riyadh.aspx
+      - https://www.idc.gov.sa/ar-sa/CommitteesDecisions/Pages/Jeddah.aspx
+      - https://www.idc.gov.sa/ar-sa/CommitteesDecisions/Pages/Dammam.aspx
+    max_depth: 3
+    max_pages: 180
+    allowed_path_prefixes:
+      - /ar-sa/CommitteesDecisions/
+    pdf_only: true
+
 rules:
   skip_scanned_without_text: true
   min_case_text_chars: 350

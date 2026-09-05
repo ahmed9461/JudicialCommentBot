@@ -13,8 +13,18 @@ from app.core.settings import Settings
 from app.db import Database
 from app.knowledge import SubjectLoader
 from app.pdf import (
-    PdfAcquisitionError, PdfAcquisitionService, PdfArtifact, PdfValidationError,
-    extract_page_range, extract_pdf_text, locate_case_page_range, verify_case_number_in_pdf,
+    JudgmentMetadata,
+    PdfAcquisitionError,
+    PdfAcquisitionService,
+    PdfArtifact,
+    PdfValidationError,
+    extract_judgment_metadata_from_pdf,
+    extract_page_range,
+    extract_pdf_text,
+    labeled_case_numbers_in_pdf,
+    locate_case_page_range,
+    refine_case_page_range,
+    verify_case_number_in_pdf,
 )
 from app.pdf.validation import validate_pdf_file
 from app.ranking import ScoreResult, ScoringPolicy, SelectionDecision, select_candidates
@@ -87,10 +97,6 @@ class CaseWorkflowService:
             await self._cleanup_session(user_id)
             subject = self.subject_loader.get_subject(subject_slug)
             await _notify(progress, f"⚙️ جاري تجهيز البحث لمادة: {subject.name_ar}…")
-            # Exclude used judgments across every course before discovery so the
-            # catalog/web layers do not spend work on a case already consumed in
-            # another subject. The post-download SHA/case checks below remain the
-            # final correctness gate and cover history older than this search list.
             dynamic_exclusions = list(await self.database.used_cases_global())
             verified: list[PreparedCase] = []
             seen_identity: set[tuple[str, ...]] = set()
@@ -155,7 +161,8 @@ class CaseWorkflowService:
             await _notify(progress, "⚖️ جاري ترتيب القضايا الموثقة واختيار الأعلى ملاءمة للمقرر…")
             verified.sort(key=lambda item: item.final_score, reverse=True)
             decision = select_candidates(
-                verified, auto_accept_score=self.settings.auto_accept_score,
+                verified,
+                auto_accept_score=self.settings.auto_accept_score,
                 display_count=self.settings.candidate_display_count,
                 min_margin=self.scoring.min_auto_accept_margin,
                 require_margin=self.scoring.require_score_margin,
@@ -202,36 +209,51 @@ class CaseWorkflowService:
                 f"🔐 تم تنزيل PDF رسمي، جاري فحص سلامة الملف والهوية والبصمة الرقمية…\nعدد الصفحات: {artifact.page_count}",
             )
 
-            if artifact.page_count > self.settings.compilation_page_threshold:
-                if not candidate.case_number:
-                    raise PdfValidationError("Large compilation requires a case number for identity verification")
-                await _notify(progress, "📚 الحكم داخل مجموعة أحكام رسمية، جاري تحديد صفحات القضية الأصلية…")
+            labeled_numbers = labeled_case_numbers_in_pdf(artifact.path)
+            is_compilation = (
+                candidate.has_page_range
+                or len(labeled_numbers) > 1
+                or artifact.page_count > self.settings.compilation_page_threshold
+            )
+
+            if is_compilation:
+                await _notify(progress, "📚 المصدر مجموعة أحكام رسمية، جاري عزل صفحات القضية وحدها…")
                 if candidate.has_page_range:
-                    start_page, end_page = candidate.pdf_page_start, candidate.pdf_page_end
-                    assert start_page is not None and end_page is not None
+                    assert candidate.pdf_page_start is not None and candidate.pdf_page_end is not None
+                    start_page, end_page, metadata = refine_case_page_range(
+                        artifact.path,
+                        hint_start=candidate.pdf_page_start,
+                        hint_end=candidate.pdf_page_end,
+                        expected_case_number=candidate.case_number,
+                    )
+                    candidate = self._apply_verified_metadata(candidate, metadata)
                 else:
+                    if not candidate.case_number:
+                        raise PdfValidationError("Compilation requires an explicit case number or catalog page range")
                     start_page, end_page = locate_case_page_range(
                         artifact.path, candidate.case_number
                     )
                 artifact = self._extract_compilation_case(
-                    artifact, candidate, start_page, end_page
-                )
-                artifact_kind = "official_compilation_extract"
-            elif candidate.has_page_range:
-                if not candidate.case_number:
-                    raise PdfValidationError("Page-range extraction requires a case number")
-                assert candidate.pdf_page_start is not None and candidate.pdf_page_end is not None
-                start_page, end_page = candidate.pdf_page_start, candidate.pdf_page_end
-                await _notify(progress, "📄 جاري استخراج صفحات القضية المحددة من الملف الرسمي…")
-                artifact = self._extract_compilation_case(
-                    artifact, candidate, start_page, end_page
+                    artifact,
+                    start_page=start_page,
+                    end_page=end_page,
+                    expected_case_number=candidate.case_number,
                 )
                 artifact_kind = "official_compilation_extract"
 
+            # The official header is the canonical source of identifiers. This
+            # deliberately corrects stale or misparsed catalog metadata instead
+            # of allowing a filename/index number to become the case number.
+            metadata = extract_judgment_metadata_from_pdf(artifact.path)
+            candidate = self._apply_verified_metadata(candidate, metadata)
+
+            extracted_numbers = labeled_case_numbers_in_pdf(artifact.path)
+            if len(extracted_numbers) > 1:
+                raise PdfValidationError("Final PDF still contains more than one labelled judgment")
             if candidate.case_number and not verify_case_number_in_pdf(
                 artifact.path, candidate.case_number
             ):
-                raise PdfValidationError("Verified PDF does not contain the claimed case number")
+                raise PdfValidationError("Verified PDF does not contain the canonical case number")
 
             if await self.database.is_case_used(
                 case_number=candidate.case_number,
@@ -282,8 +304,14 @@ class CaseWorkflowService:
             await _notify(progress, "⚠️ لم يجتز هذا المرشح التحقق، جاري تجربة قضية أخرى…")
             return None
 
-    def _extract_compilation_case(self, artifact: PdfArtifact, candidate: CaseCandidate,
-                                  start_page: int, end_page: int) -> PdfArtifact:
+    def _extract_compilation_case(
+        self,
+        artifact: PdfArtifact,
+        *,
+        start_page: int,
+        end_page: int,
+        expected_case_number: str | None,
+    ) -> PdfArtifact:
         output = artifact.path.with_name(f"{artifact.path.stem}-case.pdf")
         extract_page_range(
             artifact.path,
@@ -292,11 +320,13 @@ class CaseWorkflowService:
             output_pdf=output,
         )
         artifact.path.unlink(missing_ok=True)
-        if not candidate.case_number or not verify_case_number_in_pdf(
-            output, candidate.case_number
-        ):
+        numbers = labeled_case_numbers_in_pdf(output)
+        if len(numbers) > 1:
             output.unlink(missing_ok=True)
-            raise PdfValidationError("Extracted compilation pages do not match the case number")
+            raise PdfValidationError("Extracted range contains multiple labelled judgments")
+        if expected_case_number and not verify_case_number_in_pdf(output, expected_case_number):
+            output.unlink(missing_ok=True)
+            raise PdfValidationError("Extracted compilation pages do not match the canonical case number")
         page_count = validate_pdf_file(output, max_pages=self.settings.pdf_max_pages)
         digest = hashlib.sha256(output.read_bytes()).hexdigest()
         return PdfArtifact(
@@ -306,6 +336,29 @@ class CaseWorkflowService:
             size_bytes=output.stat().st_size,
             page_count=page_count,
         )
+
+    @staticmethod
+    def _apply_verified_metadata(candidate: CaseCandidate, metadata: JudgmentMetadata) -> CaseCandidate:
+        updates: dict[str, str] = {}
+        for field_name in (
+            "case_number",
+            "court_name",
+            "judgment_year",
+            "decision_number",
+            "decision_date",
+            "appeal_court_name",
+        ):
+            value = getattr(metadata, field_name)
+            if value:
+                old = getattr(candidate, field_name, None)
+                if old and field_name == "case_number" and old != value:
+                    logger.warning(
+                        "Correcting candidate case number from %s to official header value %s",
+                        old,
+                        value,
+                    )
+                updates[field_name] = value
+        return candidate.model_copy(update=updates) if updates else candidate
 
     @staticmethod
     def _candidate_identity(candidate: CaseCandidate) -> tuple[str, ...]:

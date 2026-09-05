@@ -99,25 +99,30 @@ def refine_case_page_range(
     expected_case_number: str | None = None,
     max_case_pages: int = 20,
 ) -> tuple[int, int, JudgmentMetadata]:
-    """Tighten a catalog range to one labelled judgment.
+    """Tighten a catalog range to one labelled judgment without scanning the full book.
 
-    Catalog ranges are hints only. Official publications sometimes contain section
-    covers, indexes or imperfectly detected boundaries. This function anchors the
-    extract to an explicit ``رقم القضية``/``رقم الدعوى`` header, stops before the
-    next labelled judgment, and removes trailing decorative divider pages.
+    Catalog ranges are hints only. Official compilations can contain hundreds or
+    thousands of pages, so extracting text from the entire source for every user
+    request is both slow and unnecessary. We inspect only a bounded window around
+    the catalog start, anchor to an explicit case header, then stop before the next
+    labelled judgment.
     """
     reader = PdfReader(str(source_pdf), strict=False)
-    texts = [(page.extract_text() or "") for page in reader.pages]
-    total = len(texts)
+    total = len(reader.pages)
     if hint_start < 1 or hint_end < hint_start or hint_start > total:
         raise PdfValidationError("Invalid catalog page-range hint")
     hint_end = min(hint_end, total)
     expected = _digits(expected_case_number) if expected_case_number else None
 
-    # Search a small buffer around the catalog hint. If the hint is overly broad,
-    # the nearest explicit legal header to its start wins deterministically.
     left = max(0, hint_start - 3)
-    right = min(total, max(hint_end + 2, hint_start + max_case_pages))
+    # Bound extraction to a small local window even if an old catalog range was
+    # accidentally broad. Two pages of look-ahead are enough to see the next header.
+    right = min(total, max(hint_start + max_case_pages + 2, hint_start + 3))
+    texts: dict[int, str] = {
+        index: (reader.pages[index].extract_text() or "")
+        for index in range(left, right)
+    }
+
     headers: list[tuple[int, str]] = []
     for index in range(left, right):
         numbers = _case_numbers(texts[index][:5000])
@@ -135,16 +140,29 @@ def refine_case_page_range(
 
     start_index, canonical_case = chosen
     hard_end = min(total - 1, start_index + max(1, max_case_pages) - 1)
-    next_header = next((idx for idx, number in headers if idx > start_index and number != canonical_case), None)
-    end_index = min(hard_end, (next_header - 1) if next_header is not None else hint_end - 1)
-    if end_index < start_index:
-        end_index = start_index
 
-    # Drop section covers / blank divider pages between the judgment and the next case.
-    while end_index > start_index and _is_decorative_page(texts[end_index]):
+    # Ensure pages up to hard_end are available. This remains bounded by max_case_pages.
+    for index in range(start_index, hard_end + 1):
+        if index not in texts:
+            texts[index] = reader.pages[index].extract_text() or ""
+
+    end_index = hard_end
+    for index in range(start_index + 1, hard_end + 1):
+        numbers = _case_numbers(texts[index][:5000])
+        if numbers and canonical_case not in numbers:
+            end_index = index - 1
+            break
+
+    # Never extend a catalog-backed case far beyond its hint when no next header
+    # was found; the hint still acts as a conservative upper boundary.
+    end_index = min(end_index, max(start_index, hint_end - 1))
+    while end_index > start_index and _is_decorative_page(texts.get(end_index, "")):
         end_index -= 1
 
-    metadata_text = "\n".join(texts[start_index : min(end_index + 1, start_index + 4)])
+    metadata_text = "\n".join(
+        texts.get(index, "")
+        for index in range(start_index, min(end_index + 1, start_index + 4))
+    )
     metadata = extract_judgment_metadata(metadata_text)
     if metadata.case_number and metadata.case_number != canonical_case:
         raise PdfValidationError("Conflicting case numbers in official judgment header")
@@ -154,27 +172,42 @@ def refine_case_page_range(
 
 
 def locate_case_page_range(source_pdf: Path, case_number: str, *, max_case_pages: int = 20) -> tuple[int, int]:
-    """Locate one explicitly labelled case inside an official compilation."""
+    """Locate one explicitly labelled case inside an official compilation.
+
+    This fallback has no catalog hint, so it may need to search forward, but it
+    stops immediately once the requested header is found and only reads at most
+    ``max_case_pages`` more pages to find the judgment end.
+    """
     expected = _digits(case_number)
     if not expected:
         raise PdfValidationError("Case number has no stable token for compilation lookup")
     reader = PdfReader(str(source_pdf), strict=False)
-    texts = [(page.extract_text() or "") for page in reader.pages]
-    start_index = next(
-        (i for i, text in enumerate(texts) if expected in _case_numbers(text[:5000])),
-        None,
-    )
+    total = len(reader.pages)
+    start_index: int | None = None
+    for index in range(total):
+        text = reader.pages[index].extract_text() or ""
+        if expected in _case_numbers(text[:5000]):
+            start_index = index
+            break
     if start_index is None:
         raise PdfValidationError("Case number was not found as an explicit case header")
 
-    hard_end = min(len(texts) - 1, start_index + max(1, max_case_pages) - 1)
+    hard_end = min(total - 1, start_index + max(1, max_case_pages) - 1)
     end_index = hard_end
+    trailing_texts: dict[int, str] = {}
     for index in range(start_index + 1, hard_end + 1):
-        numbers = _case_numbers(texts[index][:5000])
+        text = reader.pages[index].extract_text() or ""
+        trailing_texts[index] = text
+        numbers = _case_numbers(text[:5000])
         if numbers and expected not in numbers:
             end_index = index - 1
             break
-    while end_index > start_index and _is_decorative_page(texts[end_index]):
+    while end_index > start_index:
+        text = trailing_texts.get(end_index)
+        if text is None:
+            text = reader.pages[end_index].extract_text() or ""
+        if not _is_decorative_page(text):
+            break
         end_index -= 1
     return start_index + 1, end_index + 1
 

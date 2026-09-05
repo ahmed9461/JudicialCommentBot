@@ -16,6 +16,14 @@ class CaseCandidate(BaseModel):
     pdf_url: HttpUrl | None = None
     pdf_page_start: int | None = Field(default=None, ge=1)
     pdf_page_end: int | None = Field(default=None, ge=1)
+
+    # Provenance populated only by the deterministic official catalog.  A
+    # verified range is reusable only while the downloaded official collection
+    # still has the same SHA-256 that was indexed.
+    catalog_key: str | None = None
+    catalog_pdf_sha256: str | None = Field(default=None, min_length=64, max_length=64)
+    catalog_range_verified: bool = False
+
     legal_issue: str = Field(min_length=3, max_length=2000)
     suitability_reason: str = Field(min_length=3, max_length=3000)
     estimated_score: int = Field(ge=0, le=100)
@@ -31,6 +39,11 @@ class CaseCandidate(BaseModel):
         if self.pdf_page_start is not None and self.pdf_page_end is not None:
             if self.pdf_page_end < self.pdf_page_start:
                 raise ValueError("PDF page range end must be >= start")
+        if self.catalog_range_verified:
+            if not self.catalog_key or not self.catalog_pdf_sha256 or not self.has_page_range:
+                raise ValueError(
+                    "Verified catalog provenance requires catalog key, PDF SHA-256 and exact page range"
+                )
         return self
 
     @property

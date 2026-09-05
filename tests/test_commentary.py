@@ -26,10 +26,44 @@ def test_validator_rejects_markdown_and_ai_mentions() -> None:
         validate_commentary(_draft(comment_and_opinion="تم إنشاء النص بواسطة AI " + "تحليل" * 40))
 
 
-def test_docx_renderer_is_rtl_and_passes_final_validation(tmp_path: Path) -> None:
+def test_validator_rejects_article_number_not_in_verified_judgment() -> None:
+    draft = _draft(court_reasoning="استندت المحكمة إلى المادة 78 من النظام. " * 12)
+    with pytest.raises(CommentaryValidationError, match="78"):
+        validate_commentary(
+            draft,
+            judgment_text="ثبت في الحكم أن السند مستوف للشروط وفق المادة ) 87 ( من النظام.",
+        )
+
+
+def test_docx_renderer_is_rtl_and_contains_verified_metadata(tmp_path: Path) -> None:
     path = tmp_path / "comment.docx"
-    DocxRenderer().render(_draft(), subject_name="المدخل لدراسة علم القانون", subject_slug="law_intro", output_path=path)
-    validate_docx_file(path)
+    DocxRenderer().render(
+        _draft(),
+        subject_name="قانون التأمين",
+        subject_slug="insurance_law",
+        output_path=path,
+        case_number="34181612",
+        court_name="المحكمة العامة بمحافظة جدة",
+        judgment_year="1434",
+        decision_number="35262974",
+        decision_date="1435/06/02",
+        appeal_court_name="محكمة الاستئناف بمنطقة مكة المكرمة",
+        source_name="وزارة العدل",
+        source_url="https://www.moj.gov.sa/example.pdf",
+    )
+    validate_docx_file(
+        path,
+        expected_metadata={
+            "رقم القضية": "34181612",
+            "المحكمة": "المحكمة العامة بمحافظة جدة",
+            "سنة القضية": "1434",
+            "رقم قرار الاستئناف": "35262974",
+            "تاريخ القرار": "1435/06/02",
+        },
+    )
     doc = Document(path)
     assert "أولاً: تلخيص وقائع القضية وربطها بالمقرر" in [p.text for p in doc.paragraphs]
+    table_text = "\n".join(cell.text for table in doc.tables for row in table.rows for cell in row.cells)
+    assert "34181612" in table_text
+    assert "35262974" in table_text
     assert doc.core_properties.author == ""

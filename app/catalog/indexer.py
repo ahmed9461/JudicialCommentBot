@@ -1,9 +1,9 @@
 """Build a reusable local case catalog from official Saudi judicial PDFs.
 
-This is intentionally deterministic: it downloads only approved official PDFs,
-extracts text with pypdf, identifies conservative case boundaries, and stores
-page ranges pointing back to the original official collection. No LLM is used
-while building the catalog.
+The catalog is deterministic and provenance-aware: it downloads approved
+official PDFs, finds explicit judicial headers using the exact same parser used
+at delivery time, stores physical PDF page ranges, and records the source
+SHA-256. No LLM is involved in catalog construction.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ import httpx
 from pypdf import PdfReader
 
 from app.pdf import PdfAcquisitionError, PdfAcquisitionService
+from app.pdf.headers import labeled_case_numbers
 from app.sources import SourceRegistry
 
 from .manifest import CatalogManifest, CatalogSourceSpec
@@ -34,11 +35,11 @@ from .text import (
 )
 
 logger = logging.getLogger(__name__)
-CATALOG_PARSER_VERSION = 2
-_CASE_MARKER = re.compile(
-    r"(?:رقم\s+(?:القضية|الدعوى|القرار)|(?:القضية|الدعوى|القرار)\s+رقم)",
-    re.I,
-)
+
+# Increment whenever catalog admission/boundary semantics change. Runtime search
+# only exposes rows from this exact parser generation, so stale rows can never be
+# mistaken for newly verified ranges while a rebuild is in progress.
+CATALOG_PARSER_VERSION = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,27 +212,50 @@ class OfficialCatalogIndexer:
             page_texts = [(page.extract_text() or "").strip() for page in reader.pages]
             starts = self._case_starts(page_texts)
             if not starts:
+                # Reindexing must replace the previous snapshot even when the new
+                # parser finds zero admissible judgments; otherwise stale rows
+                # survive and are falsely associated with the new parser version.
+                await self.store.replace_collection(document_id, [])
                 logger.info("No conservative case boundaries detected in %s", url)
                 return 0, artifact.sha256
 
             parsed_cases: list[CatalogCase] = []
             for position, start_index in enumerate(starts):
                 next_start = starts[position + 1] if position + 1 < len(starts) else len(page_texts)
-                end_index = min(next_start, start_index + 80)
+                end_index = next_start  # exclusive; next explicit header is the boundary
+
+                while end_index - 1 > start_index and len(page_texts[end_index - 1].strip()) < 120:
+                    end_index -= 1
+
+                start_numbers = labeled_case_numbers(page_texts[start_index][:8000])
+                if len(start_numbers) != 1:
+                    continue
+                case_number = start_numbers[0]
+
+                # Admit only ranges that contain no different explicit judicial
+                # identifier. This is the invariant the runtime relies on.
+                conflicting = False
+                for page_index in range(start_index + 1, end_index):
+                    numbers = labeled_case_numbers(page_texts[page_index][:8000])
+                    if any(number != case_number for number in numbers):
+                        conflicting = True
+                        break
+                if conflicting:
+                    continue
+
                 combined = "\n".join(page_texts[start_index:end_index]).strip()
                 if len(combined) < self.manifest.min_case_text_chars:
                     continue
-                case_number = detect_case_number(page_texts[start_index]) or detect_case_number(
-                    combined[:7000]
-                )
-                if not case_number:
+                detected = detect_case_number(page_texts[start_index]) or detect_case_number(combined[:8000])
+                if detected != case_number:
                     continue
+
                 court_name = detect_court_name(combined)
                 year = detect_judgment_year(combined)
                 text = combined[: self.manifest.max_case_text_chars]
                 page_start = start_index + 1
                 page_end = end_index
-                key_material = f"{url}|{case_number}|{page_start}|{page_end}".encode("utf-8")
+                key_material = f"{url}|{case_number}|{page_start}|{page_end}|v{CATALOG_PARSER_VERSION}".encode("utf-8")
                 catalog_key = hashlib.sha256(key_material).hexdigest()
                 parsed_cases.append(
                     CatalogCase(
@@ -253,29 +277,33 @@ class OfficialCatalogIndexer:
                     )
                 )
 
-            if not parsed_cases:
-                logger.info("No usable judgments remained after parsing %s", url)
-                return 0, artifact.sha256
-
             indexed = await self.store.replace_collection(document_id, parsed_cases)
-            logger.info("Indexed %d cases from official document %s", indexed, url)
+            if indexed:
+                logger.info("Indexed %d verified case ranges from official document %s", indexed, url)
+            else:
+                logger.info("No usable judgments remained after strict range verification %s", url)
             return indexed, artifact.sha256
         finally:
             artifact.path.unlink(missing_ok=True)
 
     @staticmethod
     def _case_starts(page_texts: list[str]) -> list[int]:
+        """Return physical pages containing exactly one explicit judicial header.
+
+        Index/TOC pages normally contain several distinct labelled identifiers;
+        those pages are excluded. Repeated labels for the same continuing case
+        are collapsed.
+        """
         starts: list[int] = []
         previous_case: str | None = None
         for index, text in enumerate(page_texts):
-            if len(text) < 250:
+            if len(text) < 180:
                 continue
-            sample = text[:6000]
-            if len(_CASE_MARKER.findall(sample)) > 4:
+            sample = text[:8000]
+            numbers = labeled_case_numbers(sample)
+            if len(numbers) != 1:
                 continue
-            case_number = detect_case_number(sample)
-            if not case_number:
-                continue
+            case_number = numbers[0]
             normalized = normalize_arabic(sample)
             legal_signal = any(
                 token in normalized
@@ -288,6 +316,7 @@ class OfficialCatalogIndexer:
                     "المدعى",
                     "المتهم",
                     "المحكمه",
+                    "الدعوى",
                 )
             )
             if not legal_signal:

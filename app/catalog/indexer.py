@@ -34,6 +34,7 @@ from .text import (
 )
 
 logger = logging.getLogger(__name__)
+CATALOG_PARSER_VERSION = 2
 _CASE_MARKER = re.compile(
     r"(?:رقم\s+(?:القضية|الدعوى|القرار)|(?:القضية|الدعوى|القرار)\s+رقم)",
     re.I,
@@ -89,7 +90,10 @@ class OfficialCatalogIndexer:
                 documents_seen += 1
                 if remaining is not None:
                     remaining -= 1
-                if not force and await self.store.is_document_indexed(url):
+                if not force and await self.store.is_document_indexed(
+                    url,
+                    parser_version=CATALOG_PARSER_VERSION,
+                ):
                     documents_skipped += 1
                     continue
                 try:
@@ -111,6 +115,7 @@ class OfficialCatalogIndexer:
                         source_id=spec.source_id,
                         pdf_sha256=pdf_sha256,
                         case_count=count,
+                        parser_version=CATALOG_PARSER_VERSION,
                     )
                 if self.manifest.request_delay_seconds:
                     await asyncio.sleep(self.manifest.request_delay_seconds)
@@ -206,16 +211,12 @@ class OfficialCatalogIndexer:
             page_texts = [(page.extract_text() or "").strip() for page in reader.pages]
             starts = self._case_starts(page_texts)
             if not starts:
-                # A successfully read but non-case publication should not wipe an
-                # existing collection snapshot on force-refresh.
                 logger.info("No conservative case boundaries detected in %s", url)
                 return 0, artifact.sha256
 
             parsed_cases: list[CatalogCase] = []
             for position, start_index in enumerate(starts):
                 next_start = starts[position + 1] if position + 1 < len(starts) else len(page_texts)
-                # A single judgment in official collections should not swallow a
-                # very large trailing index if no following boundary was detected.
                 end_index = min(next_start, start_index + 80)
                 combined = "\n".join(page_texts[start_index:end_index]).strip()
                 if len(combined) < self.manifest.min_case_text_chars:
@@ -229,8 +230,6 @@ class OfficialCatalogIndexer:
                 year = detect_judgment_year(combined)
                 text = combined[: self.manifest.max_case_text_chars]
                 page_start = start_index + 1
-                # end_index is the exclusive zero-based boundary; numerically it
-                # is also the inclusive 1-based page number of the preceding page.
                 page_end = end_index
                 key_material = f"{url}|{case_number}|{page_start}|{page_end}".encode("utf-8")
                 catalog_key = hashlib.sha256(key_material).hexdigest()
@@ -272,8 +271,6 @@ class OfficialCatalogIndexer:
             if len(text) < 250:
                 continue
             sample = text[:6000]
-            # Tables of contents often contain many metadata markers on one page;
-            # those are deliberately rejected as case boundaries.
             if len(_CASE_MARKER.findall(sample)) > 4:
                 continue
             case_number = detect_case_number(sample)

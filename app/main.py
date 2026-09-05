@@ -85,7 +85,7 @@ async def run() -> None:
             api_key=api_key,
             base_url=settings.deepseek_base_url,
             model=settings.deepseek_commentary_model,
-            timeout_seconds=settings.deepseek_stream_idle_timeout_seconds,
+            timeout_seconds=settings.deepseek_commentary_idle_timeout_seconds,
             connect_timeout_seconds=settings.deepseek_connect_timeout_seconds,
             reasoning_effort=settings.deepseek_commentary_reasoning_effort,
         )
@@ -93,6 +93,7 @@ async def run() -> None:
             generator=commentary_generator,
             renderer=DocxRenderer(),
             temp_dir=settings.temp_dir,
+            validation_attempts=settings.commentary_validation_attempts,
         )
 
     catalog_provider = CatalogResearchProvider(catalog_store)

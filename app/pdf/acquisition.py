@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import re
 import tempfile
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urljoin
@@ -17,6 +19,8 @@ from app.sources import SourceRegistry
 from .errors import PdfAcquisitionError, PdfValidationError
 from .security import validate_pdf_url
 from .validation import validate_pdf_file
+
+ProgressCallback = Callable[[str], Awaitable[None]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +48,9 @@ class PdfAcquisitionService:
         self.temp_dir = Path(temp_dir)
         self.max_bytes = max_bytes
         self.max_pages = max_pages
+        # This is a real wall-clock deadline for one PDF acquisition, not merely
+        # httpx's per-read inactivity timeout. A server that drips a few bytes
+        # forever therefore cannot hold the workflow indefinitely.
         self.timeout_seconds = max(1.0, float(timeout_seconds))
         self.connect_timeout_seconds = max(
             1.0,
@@ -52,8 +59,34 @@ class PdfAcquisitionService:
         self.max_redirects = max_redirects
         self.temp_dir.mkdir(parents=True, exist_ok=True)
 
-    async def acquire(self, url: str, *, suggested_name: str = "case") -> PdfArtifact:
+    async def acquire(
+        self,
+        url: str,
+        *,
+        suggested_name: str = "case",
+        progress: ProgressCallback | None = None,
+    ) -> PdfArtifact:
+        try:
+            async with asyncio.timeout(self.timeout_seconds):
+                return await self._acquire_with_deadline(
+                    url,
+                    suggested_name=suggested_name,
+                    progress=progress,
+                )
+        except TimeoutError as exc:
+            raise PdfAcquisitionError(
+                f"Official PDF acquisition exceeded {self.timeout_seconds:g}s total deadline: {url}"
+            ) from exc
+
+    async def _acquire_with_deadline(
+        self,
+        url: str,
+        *,
+        suggested_name: str,
+        progress: ProgressCallback | None,
+    ) -> PdfArtifact:
         current_url = url
+        # Keep read/write operations bounded even before the outer total deadline.
         timeout = httpx.Timeout(
             self.timeout_seconds,
             connect=min(self.connect_timeout_seconds, self.timeout_seconds),
@@ -92,7 +125,12 @@ class PdfAcquisitionService:
                         raise PdfAcquisitionError(
                             f"PDF download returned HTTP {response.status_code}"
                         )
-                    return await self._save_response(response, current_url, suggested_name)
+                    return await self._save_response(
+                        response,
+                        current_url,
+                        suggested_name,
+                        progress=progress,
+                    )
                 except httpx.TimeoutException as exc:
                     raise PdfAcquisitionError(
                         f"Official PDF source timed out while streaming: {current_url}"
@@ -110,6 +148,8 @@ class PdfAcquisitionService:
         response: httpx.Response,
         source_url: str,
         suggested_name: str,
+        *,
+        progress: ProgressCallback | None,
     ) -> PdfArtifact:
         filename = _safe_filename(suggested_name)
         fd, raw_path = tempfile.mkstemp(
@@ -134,7 +174,21 @@ class PdfAcquisitionService:
                     handle.write(chunk)
             if first != b"%PDF-":
                 raise PdfValidationError("Downloaded resource is not a PDF")
-            page_count = validate_pdf_file(path, max_pages=self.max_pages)
+
+            if progress is not None:
+                await progress(
+                    f"📦 اكتمل تنزيل ملف PDF ({_human_size(size)}). جاري فحص بنية الملف وعدد الصفحات…"
+                )
+
+            # pypdf parsing is synchronous and can be CPU-heavy for old/large
+            # official compilations. Never run it on the Telegram event loop;
+            # otherwise the three-second status ticker freezes and the bot looks
+            # dead even though Python is still parsing the PDF.
+            page_count = await asyncio.to_thread(
+                validate_pdf_file,
+                path,
+                max_pages=self.max_pages,
+            )
             return PdfArtifact(
                 path=path,
                 source_url=source_url,
@@ -151,3 +205,11 @@ def _safe_filename(value: str) -> str:
     value = re.sub(r"[^\w\-\u0600-\u06FF]+", "-", value, flags=re.UNICODE)
     value = value.strip("-_")[:80]
     return value or "case"
+
+
+def _human_size(size: int) -> str:
+    if size < 1024:
+        return f"{size} B"
+    if size < 1024 * 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size / (1024 * 1024):.1f} MB"

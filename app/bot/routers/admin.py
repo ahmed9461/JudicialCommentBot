@@ -5,7 +5,7 @@ from aiogram.filters import Command
 from aiogram.filters.command import CommandObject
 from aiogram.types import CallbackQuery, Message
 
-from app.catalog import CatalogStore
+from app.catalog import CATALOG_PARSER_VERSION, CatalogStore
 from app.core.constants import MAX_ALLOWED_USERS_DISPLAY
 from app.db import Database
 from app.services import AccessService
@@ -98,20 +98,26 @@ async def catalog_status(message: Message, access_service: AccessService, catalo
     if not access_service.is_owner(requester):
         await message.answer("⛔ هذا الأمر للمالك فقط.")
         return
-    stats = await catalog_store.stats()
-    if stats.cases == 0:
+    verified = await catalog_store.stats(parser_version=CATALOG_PARSER_VERSION)
+    total = await catalog_store.stats()
+    if verified.cases == 0:
+        stale_note = ""
+        if total.cases:
+            stale_note = f"\nيوجد {total.cases} سجلًا من جيل فهرسة أقدم، لكنها معطلة ولا تدخل البحث."
         await message.answer(
-            "🗂️ فهرس الأحكام الرسمية فارغ حاليًا.\n"
-            "شغّل على السيرفر: python -m app.catalog refresh\n"
-            "بعد البناء سيصبح الفهرس هو مسار البحث الأساسي لجميع المقررات."
+            "🗂️ الفهرس القضائي المتحقق غير جاهز بعد.\n"
+            f"جيل الفهرسة الحالي: v{CATALOG_PARSER_VERSION}."
+            f"{stale_note}\n\n"
+            "شغّل/اترك خدمة تحديث الفهرس حتى تكتمل. لن يستخدم البوت سجلات قديمة بدلًا من ذلك."
         )
         return
     await message.answer(
-        "🗂️ حالة فهرس الأحكام الرسمية:\n"
-        f"القضايا: {stats.cases}\n"
-        f"المجموعات: {stats.collections}\n"
-        f"الجهات الرسمية: {stats.sources}\n\n"
-        "يُستخدم هذا الفهرس أولًا، والبحث عبر الويب احتياطي فقط عند نقص النتائج."
+        "🗂️ حالة الفهرس القضائي المتحقق:\n"
+        f"جيل الفهرسة: v{CATALOG_PARSER_VERSION}\n"
+        f"القضايا الجاهزة: {verified.cases}\n"
+        f"المجموعات الجاهزة: {verified.collections}\n"
+        f"الجهات الرسمية: {verified.sources}\n\n"
+        "البحث يستخدم هذا الجيل فقط؛ أي سجلات من قواعد فهرسة أقدم لا تُعرض ولا تُستخدم."
     )
 
 

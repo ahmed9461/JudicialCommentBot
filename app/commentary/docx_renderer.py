@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 from docx import Document
+from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
@@ -18,15 +19,29 @@ class DocxRenderer:
     def __init__(self, *, font_name: str = "Arial") -> None:
         self.font_name = font_name
 
-    def render(self, draft: CommentaryDraft, *, subject_name: str, output_path: Path,
-               subject_slug: str | None = None) -> Path:
+    def render(
+        self,
+        draft: CommentaryDraft,
+        *,
+        subject_name: str,
+        output_path: Path,
+        subject_slug: str | None = None,
+        case_number: str | None = None,
+        court_name: str | None = None,
+        judgment_year: str | None = None,
+        decision_number: str | None = None,
+        decision_date: str | None = None,
+        appeal_court_name: str | None = None,
+        source_name: str | None = None,
+        source_url: str | None = None,
+    ) -> Path:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         doc = Document()
         section = doc.sections[0]
-        section.top_margin = Cm(2.0)
-        section.bottom_margin = Cm(2.0)
-        section.right_margin = Cm(2.2)
-        section.left_margin = Cm(2.2)
+        section.top_margin = Cm(1.8)
+        section.bottom_margin = Cm(1.8)
+        section.right_margin = Cm(2.0)
+        section.left_margin = Cm(2.0)
 
         normal = doc.styles["Normal"]
         normal.font.name = self.font_name
@@ -39,6 +54,7 @@ class DocxRenderer:
         title = doc.add_paragraph()
         self._set_rtl(title)
         title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        title.paragraph_format.space_after = Pt(4)
         run = title.add_run(draft.title.strip())
         run.bold = True
         run.font.name = self.font_name
@@ -47,25 +63,76 @@ class DocxRenderer:
         course = doc.add_paragraph()
         self._set_rtl(course)
         course.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        course.paragraph_format.space_after = Pt(6)
         course_run = course.add_run(f"المقرر: {subject_name}")
         course_run.font.name = self.font_name
         course_run.font.size = Pt(13)
 
+        metadata_rows = [
+            ("رقم القضية", case_number),
+            ("المحكمة", court_name),
+            ("سنة القضية", judgment_year),
+            ("رقم قرار الاستئناف", decision_number),
+            ("تاريخ القرار", decision_date),
+            ("محكمة الاستئناف", appeal_court_name),
+        ]
+        metadata_rows = [(label, value) for label, value in metadata_rows if value]
+        if metadata_rows:
+            table = doc.add_table(rows=0, cols=2)
+            table.autofit = True
+            for label, value in metadata_rows:
+                cells = table.add_row().cells
+                cells[0].text = str(value)
+                cells[1].text = label
+                for cell in cells:
+                    cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+                    for paragraph in cell.paragraphs:
+                        self._set_rtl(paragraph)
+                        paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                        paragraph.paragraph_format.space_after = Pt(0)
+                        for item in paragraph.runs:
+                            item.font.name = self.font_name
+                            item.font.size = Pt(11.5)
+                cells[1].paragraphs[0].runs[0].bold = True
+            after_table = doc.add_paragraph()
+            after_table.paragraph_format.space_after = Pt(1)
+
         headings = self._headings(subject_slug)
-        bodies = (draft.facts_and_course_link, draft.legal_issue, draft.court_reasoning, draft.comment_and_opinion)
+        bodies = (
+            draft.facts_and_course_link,
+            draft.legal_issue,
+            draft.court_reasoning,
+            draft.comment_and_opinion,
+        )
         for heading, body in zip(headings, bodies, strict=True):
             self._add_heading(doc, heading)
             self._add_body(doc, body)
 
-        if draft.references:
+        references: list[str] = []
+        for reference in draft.references:
+            cleaned = reference.strip()
+            if cleaned and cleaned not in references:
+                references.append(cleaned)
+        verified_source = ""
+        if source_name and source_url:
+            verified_source = f"{source_name}، المصدر الرسمي: {source_url}"
+        elif source_url:
+            verified_source = f"المصدر الرسمي: {source_url}"
+        elif source_name:
+            verified_source = source_name
+        if verified_source and verified_source not in references:
+            references.append(verified_source)
+
+        if references:
             self._add_heading(doc, "المراجع")
-            for reference in draft.references:
+            for reference in references:
                 p = doc.add_paragraph()
                 self._set_rtl(p)
                 p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-                r = p.add_run(reference.strip())
+                p.paragraph_format.space_after = Pt(2)
+                r = p.add_run(reference)
                 r.font.name = self.font_name
-                r.font.size = Pt(12)
+                r.font.size = Pt(11.5)
 
         footer = section.footer.paragraphs[0]
         footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -107,6 +174,9 @@ class DocxRenderer:
         p = doc.add_paragraph()
         self._set_rtl(p)
         p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        p.paragraph_format.space_before = Pt(5)
+        p.paragraph_format.space_after = Pt(2)
+        p.paragraph_format.keep_with_next = True
         r = p.add_run(text)
         r.bold = True
         r.font.name = self.font_name
@@ -118,8 +188,8 @@ class DocxRenderer:
             p = doc.add_paragraph()
             self._set_rtl(p)
             p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-            p.paragraph_format.line_spacing = 1.25
-            p.paragraph_format.space_after = Pt(6)
+            p.paragraph_format.line_spacing = 1.15
+            p.paragraph_format.space_after = Pt(4)
             r = p.add_run(chunk)
             r.font.name = self.font_name
             r.font.size = Pt(14)

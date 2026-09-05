@@ -22,7 +22,7 @@ from app.pdf import PdfAcquisitionService
 from app.sources import SourceRegistry
 
 from .errors import CatalogNotReadyError
-from .indexer import OfficialCatalogIndexer
+from .indexer import CATALOG_PARSER_VERSION, OfficialCatalogIndexer
 from .manifest import CatalogManifestLoader
 from .provider import CatalogResearchProvider
 from .store import CatalogStore
@@ -36,14 +36,22 @@ async def _run(args: argparse.Namespace) -> int:
     store = CatalogStore(database)
 
     if args.command == "stats":
-        stats = await store.stats()
-        print(f"cases={stats.cases} collections={stats.collections} sources={stats.sources}")
+        verified = await store.stats(parser_version=CATALOG_PARSER_VERSION)
+        total = await store.stats()
+        print(
+            f"parser_version={CATALOG_PARSER_VERSION} "
+            f"verified_cases={verified.cases} verified_collections={verified.collections} "
+            f"verified_sources={verified.sources} total_rows={total.cases}"
+        )
         return 0
 
     if args.command == "coverage":
-        stats = await store.stats()
+        stats = await store.stats(parser_version=CATALOG_PARSER_VERSION)
         if stats.cases == 0:
-            print("catalog_not_ready cases=0; run: python -m app.catalog refresh")
+            print(
+                f"catalog_not_ready parser_version={CATALOG_PARSER_VERSION} cases=0; "
+                "run: python -m app.catalog refresh"
+            )
             return 2
         loader = SubjectLoader()
         provider = CatalogResearchProvider(store)
@@ -67,8 +75,9 @@ async def _run(args: argparse.Namespace) -> int:
                 thin += 1
             print(f"{status}\t{count}\t{subject.slug}\t{subject.name_ar}")
         print(
-            f"coverage_summary subjects={len(loader.list_subjects())} "
-            f"minimum={minimum} missing={missing} thin={thin}"
+            f"coverage_summary parser_version={CATALOG_PARSER_VERSION} "
+            f"subjects={len(loader.list_subjects())} minimum={minimum} "
+            f"missing={missing} thin={thin}"
         )
         return 1 if missing else 0
 
@@ -94,15 +103,16 @@ async def _run(args: argparse.Namespace) -> int:
         max_documents=args.max_documents,
         force=args.force,
     )
-    stats = await store.stats()
+    stats = await store.stats(parser_version=CATALOG_PARSER_VERSION)
     print(
         "refresh_complete "
+        f"parser_version={CATALOG_PARSER_VERSION} "
         f"documents_seen={report.documents_seen} "
         f"documents_indexed={report.documents_indexed} "
         f"documents_skipped={report.documents_skipped} "
         f"documents_failed={report.documents_failed} "
         f"cases_indexed={report.cases_indexed} "
-        f"catalog_cases={stats.cases}"
+        f"verified_catalog_cases={stats.cases}"
     )
     return 0
 

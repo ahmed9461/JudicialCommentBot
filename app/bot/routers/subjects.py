@@ -7,15 +7,18 @@ from pathlib import Path
 
 import httpx
 from aiogram import F, Router
+from aiogram.exceptions import TelegramAPIError
 from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.bot.keyboards import subjects_keyboard
 from app.bot.progress import StatusTicker
+from app.commentary import CommentaryValidationError
 from app.core.constants import (
     CALLBACK_NEW_CASE_PREFIX, CALLBACK_PICK_PREFIX, CALLBACK_REGENERATE_PREFIX,
     CALLBACK_SEARCH_PREFIX, CALLBACK_SUBJECTS_PREFIX, SUBJECTS_PAGE_SIZE,
 )
 from app.core.settings import Settings
+from app.deepseek import DeepSeekStreamError
 from app.knowledge import SubjectLoader
 from app.research import ResearchServiceError
 from app.services import AssignmentService, CaseWorkflowService, NoSuitableCasesError
@@ -265,6 +268,7 @@ async def _send_assignment(
         return
 
     docx_path: Path | None = None
+    pdf_sent = False
     try:
         docx_path = await assignment_service.generate_docx(
             selected,
@@ -288,6 +292,7 @@ async def _send_assignment(
             FSInputFile(selected.artifact.path, filename=pdf_name),
             caption=pdf_caption,
         )
+        pdf_sent = True
 
         if progress:
             await progress.set_phase("📤 تم إرسال الحكم. جاري إرسال ملف التعليق الأكاديمي…", immediate=True)
@@ -321,17 +326,36 @@ async def _send_assignment(
         )
         if progress:
             await progress.stop("✅ تم إنشاء الملفات والتحقق منها وإرسالها بنجاح.")
-    except Exception:
-        logger.exception("Assignment generation/send failed")
-        await workflow_service.cleanup_user(callback.from_user.id)
+    except Exception as exc:
+        logger.exception(
+            "Assignment generation/send failed code=%s case=%s",
+            _assignment_failure_code(exc),
+            selected.candidate.case_number,
+        )
+        code = _assignment_failure_code(exc)
+        message = _assignment_failure_message(code, pdf_sent=pdf_sent)
         if progress:
-            await progress.stop(
-                "❌ فشل إنشاء أو إرسال الملفات. لم تُسجل القضية كمستخدمة وتم تنظيف الملفات المؤقتة."
-            )
+            await progress.stop(f"{message}\n\nرمز التشخيص: {code}")
         else:
-            await callback.message.answer(
-                "❌ فشل إنشاء أو إرسال الملفات. لم تُسجل القضية كمستخدمة وتم تنظيف الملفات المؤقتة."
-            )
+            await callback.message.answer(f"{message}\n\nرمز التشخيص: {code}")
+
+        # Keep the verified judgment/session reserved. A drafting or Telegram
+        # failure must never force another search/download or lose the chosen case.
+        retry_prefix = CALLBACK_REGENERATE_PREFIX if pdf_sent else CALLBACK_PICK_PREFIX
+        retry_text = "🔁 إعادة إرسال التعليق" if pdf_sent else "🔁 إعادة المحاولة على نفس القضية"
+        retry_actions = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=retry_text, callback_data=f"{retry_prefix}{token}")],
+            [
+                InlineKeyboardButton(
+                    text="🔎 اختيار قضية أخرى",
+                    callback_data=f"{CALLBACK_NEW_CASE_PREFIX}{subject.slug}",
+                )
+            ],
+        ])
+        await callback.message.answer(
+            "القضية الموثقة ما زالت محفوظة في الجلسة؛ لا حاجة لإعادة البحث أو تنزيل الحكم.",
+            reply_markup=retry_actions,
+        )
     finally:
         if docx_path is not None:
             docx_path.unlink(missing_ok=True)
@@ -387,10 +411,64 @@ async def regenerate(
             ),
             caption="نسخة بديلة من التعليق على نفس القضية.",
         )
-        await progress.stop("✅ تم إرسال النسخة البديلة. لم تُسجل القضية مرة أخرى.")
-    except Exception:
-        logger.exception("Commentary regeneration failed")
-        await progress.stop("❌ تعذرت إعادة توليد التعليق حالياً.")
+        # Idempotent: records the case only if the original full delivery had not
+        # already completed. This also finishes a partial delivery where PDF sent
+        # successfully but the DOCX send previously failed.
+        await workflow_service.record_sent(callback.from_user.id)
+        await progress.stop("✅ تم إرسال النسخة البديلة. لم تُسجل القضية أكثر من مرة.")
+    except Exception as exc:
+        code = _assignment_failure_code(exc)
+        logger.exception("Commentary regeneration failed code=%s", code)
+        await progress.stop(
+            f"{_assignment_failure_message(code, pdf_sent=True)}\n\nرمز التشخيص: {code}"
+        )
     finally:
         if path is not None:
             path.unlink(missing_ok=True)
+
+
+def _assignment_failure_code(exc: Exception) -> str:
+    if isinstance(exc, httpx.TimeoutException):
+        return "commentary_timeout"
+    if isinstance(exc, DeepSeekStreamError):
+        return "commentary_stream"
+    if isinstance(exc, CommentaryValidationError):
+        return "commentary_validation"
+    if isinstance(exc, TelegramAPIError):
+        return "telegram_send"
+    if isinstance(exc, FileNotFoundError):
+        return "artifact_missing"
+    if isinstance(exc, ValueError):
+        return "commentary_output"
+    return type(exc).__name__.lower()
+
+
+def _assignment_failure_message(code: str, *, pdf_sent: bool) -> str:
+    if code == "commentary_timeout":
+        return (
+            "⏳ توقف بث كتابة التعليق مدة أطول من الحد الآمن. "
+            "لم تُفقد القضية ويمكن إعادة المحاولة عليها مباشرة."
+        )
+    if code == "commentary_stream":
+        return (
+            "🧩 انتهى بث كتابة التعليق قبل وصول نتيجة مكتملة. "
+            "القضية الموثقة محفوظة ويمكن إعادة المحاولة دون بحث جديد."
+        )
+    if code == "commentary_validation":
+        return (
+            "🛡️ المسودة لم تجتز التحقق القانوني النهائي حتى بعد محاولة التصحيح، "
+            "ولذلك لم يرسل النظام ملفاً غير موثوق."
+        )
+    if code == "commentary_output":
+        return (
+            "🧾 لم تصل مخرجات التعليق بالصيغة المنظمة المطلوبة. "
+            "القضية محفوظة ويمكن إعادة المحاولة دون إعادة البحث."
+        )
+    if code == "telegram_send":
+        return (
+            "📡 تم تجهيز الملفات لكن تعذر إرسال أحدها عبر Telegram حالياً. "
+            + ("ملف الحكم أُرسل بالفعل؛ يمكنك إعادة إرسال التعليق فقط." if pdf_sent else "يمكن إعادة الإرسال على نفس القضية.")
+        )
+    if code == "artifact_missing":
+        return "📁 ملف الحكم الموثق لم يعد موجوداً وقت الإرسال؛ لم تُسجل القضية كمستخدمة."
+    return "❌ تعذر إكمال إنشاء أو إرسال الملفات حالياً. القضية الموثقة ما زالت محفوظة لإعادة المحاولة."

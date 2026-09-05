@@ -17,11 +17,12 @@ class Settings(BaseSettings):
     deepseek_research_model: str = "deepseek-v4-flash"
     deepseek_commentary_model: str = "deepseek-v4-pro"
 
-    # Responses API calls are streamed. These are connection/idle timeouts, not
-    # total wall-clock deadlines. A healthy long-running web search is therefore
-    # not cancelled just because it takes more than N seconds overall.
+    # Responses API calls are streamed. Research and final legal drafting have
+    # different latency profiles, so they intentionally do not share one idle
+    # timeout. These are idle/read deadlines, not total wall-clock deadlines.
     deepseek_connect_timeout_seconds: float = 15.0
     deepseek_stream_idle_timeout_seconds: float = 180.0
+    deepseek_commentary_idle_timeout_seconds: float = 420.0
 
     # Kept only for backwards-compatible parsing of older .env files. The app no
     # longer uses them as total request deadlines.
@@ -33,6 +34,11 @@ class Settings(BaseSettings):
     deepseek_synthesis_attempts: int = 1
     deepseek_max_search_calls_for_synthesis: int = 6
     deepseek_preflight_ttl_seconds: float = 300.0
+
+    # If a complete model response fails the deterministic commentary validator,
+    # allow one correction pass over the same verified judgment. Network timeouts
+    # are not auto-retried here to avoid silently paying twice for a lost stream.
+    commentary_validation_attempts: int = 2
 
     # DeepSeek V4 defaults to high reasoning if omitted. Search discovery does
     # not need model reasoning, while structured ranking uses low reasoning and
@@ -95,6 +101,7 @@ class Settings(BaseSettings):
         "deepseek_research_attempts",
         "deepseek_synthesis_attempts",
         "deepseek_max_search_calls_for_synthesis",
+        "commentary_validation_attempts",
         "search_retry_rounds",
         "search_candidate_limit",
         "catalog_min_candidates_before_fallback",
@@ -109,6 +116,7 @@ class Settings(BaseSettings):
         "progress_update_interval_seconds",
         "deepseek_connect_timeout_seconds",
         "deepseek_stream_idle_timeout_seconds",
+        "deepseek_commentary_idle_timeout_seconds",
         "deepseek_request_timeout_seconds",
         "deepseek_research_timeout_seconds",
         "deepseek_commentary_timeout_seconds",

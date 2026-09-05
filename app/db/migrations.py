@@ -112,4 +112,9 @@ MIGRATIONS: dict[int, str] = {
     );
     CREATE INDEX IF NOT EXISTS idx_catalog_documents_source ON catalog_documents(source_id);
     """,
+    6: """
+    ALTER TABLE catalog_documents ADD COLUMN parser_version INTEGER NOT NULL DEFAULT 1;
+    CREATE INDEX IF NOT EXISTS idx_catalog_documents_parser_version
+        ON catalog_documents(parser_version);
+    """,
 }

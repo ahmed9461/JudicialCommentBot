@@ -210,11 +210,6 @@ class CaseWorkflowService:
                 f"🔐 تم تنزيل PDF رسمي بنجاح. جاري التحقق من بنية الحكم وهويته…\nعدد الصفحات: {artifact.page_count}",
             )
 
-            # Catalog results already carry a page range, and very large PDFs are
-            # obviously compilations. Do not scan every page merely to prove that
-            # fact; the expensive fallback scan is only used for smaller ambiguous
-            # files. Every pypdf operation is executed in a worker thread so the
-            # Telegram event loop/status ticker stays alive.
             is_compilation = candidate.has_page_range or (
                 artifact.page_count > self.settings.compilation_page_threshold
             )
@@ -229,7 +224,22 @@ class CaseWorkflowService:
 
             if is_compilation:
                 await _notify(progress, "📚 المصدر مجموعة أحكام رسمية، جاري عزل صفحات القضية وحدها…")
-                if candidate.has_page_range:
+                if candidate.catalog_range_verified:
+                    assert candidate.pdf_page_start is not None and candidate.pdf_page_end is not None
+                    assert candidate.catalog_pdf_sha256 is not None
+                    if artifact.sha256.lower() != candidate.catalog_pdf_sha256.lower():
+                        raise PdfValidationError(
+                            "Official collection fingerprint changed since catalog indexing; catalog refresh is required"
+                        )
+                    if candidate.pdf_page_end > artifact.page_count:
+                        raise PdfValidationError("Verified catalog page range exceeds current official PDF")
+                    start_page = candidate.pdf_page_start
+                    end_page = candidate.pdf_page_end
+                    await _notify(
+                        progress,
+                        f"🧾 تطابقت بصمة المجموعة الرسمية مع الفهرس؛ اعتماد نطاق الصفحات الموثق {start_page}-{end_page}.",
+                    )
+                elif candidate.has_page_range:
                     assert candidate.pdf_page_start is not None and candidate.pdf_page_end is not None
                     start_page, end_page, metadata = await self._run_pdf_stage(
                         "🧭 جاري تثبيت بداية ونهاية الحكم من الرأس الرسمي…",
@@ -243,7 +253,7 @@ class CaseWorkflowService:
                     candidate = self._apply_verified_metadata(candidate, metadata)
                 else:
                     if not candidate.case_number:
-                        raise PdfValidationError("Compilation requires an explicit case number or catalog page range")
+                        raise PdfValidationError("Compilation requires an explicit case number or page range")
                     start_page, end_page = await self._run_pdf_stage(
                         "🧭 جاري تحديد صفحات القضية داخل المجموعة الرسمية…",
                         locate_case_page_range,
@@ -352,12 +362,7 @@ class CaseWorkflowService:
         progress: ProgressCallback | None = None,
         **kwargs: Any,
     ) -> Any:
-        """Run blocking pypdf work outside the bot event loop with a stage deadline.
-
-        This is the central guard against the exact failure mode where Telegram's
-        status message froze because PdfReader/extract_text was executing directly
-        on asyncio's event-loop thread.
-        """
+        """Run blocking pypdf work outside the bot event loop with a stage deadline."""
         await _notify(progress, phase)
         try:
             return await asyncio.wait_for(

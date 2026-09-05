@@ -277,11 +277,12 @@ async def _send_assignment(
         if progress:
             await progress.set_phase("📤 جاري إرسال ملف الحكم القضائي الأصلي…", immediate=True)
 
-        pdf_name = f"حكم قضائي - {selected.candidate.case_number or 'قضية'}.pdf"
-        docx_name = f"التعليق على حكم قضائي - {subject.name_ar}.docx"
+        case_number = selected.candidate.case_number or "قضية"
+        pdf_name = f"حكم قضائي - {case_number} - {subject.name_ar}.pdf"
+        docx_name = f"التعليق على حكم قضائي - {case_number} - {subject.name_ar}.docx"
         pdf_caption = "ملف الحكم القضائي الأصلي من المصدر الرسمي."
         if selected.artifact_kind == "official_compilation_extract":
-            pdf_caption = "صفحات الحكم الأصلية مستخرجة من مجموعة أحكام رسمية دون إعادة إنشاء محتواها."
+            pdf_caption = "صفحات الحكم الأصلية فقط، مستخرجة من مجموعة أحكام رسمية دون إعادة إنشاء المحتوى."
 
         await callback.message.answer_document(
             FSInputFile(selected.artifact.path, filename=pdf_name),
@@ -293,7 +294,7 @@ async def _send_assignment(
 
         await callback.message.answer_document(
             FSInputFile(docx_path, filename=docx_name),
-            caption="ملف التعليق الأكاديمي.",
+            caption="ملف التعليق الأكاديمي المطابق لبيانات الحكم الموثقة.",
         )
         await workflow_service.record_sent(callback.from_user.id)
         actions = InlineKeyboardMarkup(inline_keyboard=[
@@ -312,6 +313,7 @@ async def _send_assignment(
         ])
         await callback.message.answer(
             f"✅ اكتمل التكليف.\n"
+            f"رقم القضية: {case_number}\n"
             f"التقييم: {selected.final_score}/100\n"
             f"المصدر الأصلي: {selected.artifact.source_url}",
             reply_markup=actions,
@@ -377,10 +379,11 @@ async def regenerate(
             progress=progress.set_phase,
         )
         await progress.set_phase("📤 جاري إرسال النسخة البديلة من التعليق…", immediate=True)
+        case_number = selected.candidate.case_number or "قضية"
         await callback.message.answer_document(
             FSInputFile(
                 path,
-                filename=f"التعليق على حكم قضائي - {subject.name_ar} - بديل.docx",
+                filename=f"التعليق على حكم قضائي - {case_number} - {subject.name_ar} - بديل.docx",
             ),
             caption="نسخة بديلة من التعليق على نفس القضية.",
         )

@@ -12,15 +12,12 @@ from app.research.models import CaseCandidate
 from app.research.provider import ResearchProgressCallback, ResearchProvider
 
 from .errors import CatalogNotReadyError
+from .indexer import CATALOG_PARSER_VERSION
 from .store import CatalogStore
 from .text import normalize_arabic
 
 logger = logging.getLogger(__name__)
 
-# Generic legal/course boilerplate is deliberately excluded from lexical
-# expansion. Keeping domain-bearing terms (e.g. مسؤولية، عقد، عود، تنفيذ) makes
-# the same retrieval engine useful across all course files without hard-coding
-# one course in Python.
 _STOPWORDS = {
     "القانون", "القانوني", "القانونية", "القضية", "قضية", "حكم", "الحكم",
     "المقرر", "المادة", "المحكمة", "المحاكم", "مناسب", "مناسبة", "يظهر",
@@ -46,11 +43,11 @@ class SubjectSourceMap:
 
 
 class CatalogResearchProvider:
-    """Deterministic search over already-indexed official judgments.
+    """Deterministic search over parser-verified official judgments.
 
-    The same implementation serves every course. Course-specific behavior comes
-    from the existing YAML knowledge files and the separate source-preference
-    map, so there is no course-specific branching in application code.
+    Only rows built by the current catalog parser generation are visible. This
+    prevents a bot restart during catalog rebuilding from serving stale ranges
+    produced by older parsing rules.
     """
 
     def __init__(self, store: CatalogStore, source_map: SubjectSourceMap | None = None) -> None:
@@ -65,15 +62,15 @@ class CatalogResearchProvider:
         limit: int,
         progress: ResearchProgressCallback | None = None,
     ) -> list[CaseCandidate]:
-        stats = await self.store.stats()
+        stats = await self.store.stats(parser_version=CATALOG_PARSER_VERSION)
         if progress is not None:
             await progress(
-                f"🗂️ جاري البحث محليًا في فهرس الأحكام الرسمية…\n"
-                f"الفهرس الحالي: {stats.cases} قضية من {stats.collections} مجموعة."
+                f"🗂️ جاري البحث محليًا في الفهرس القضائي المتحقق…\n"
+                f"الفهرس الجاهز: {stats.cases} قضية من {stats.collections} مجموعة رسمية."
             )
         if stats.cases == 0:
             raise CatalogNotReadyError(
-                "Official judicial catalog is empty; run `python -m app.catalog refresh` first"
+                "Current verified catalog generation is empty; complete catalog refresh first"
             )
 
         terms = _subject_terms(subject)
@@ -81,6 +78,7 @@ class CatalogResearchProvider:
             terms,
             preferred_source_ids=self.source_map.preferred_for(subject.slug),
             limit=max(limit * 4, 20),
+            parser_version=CATALOG_PARSER_VERSION,
         )
         excluded = {
             (_norm_identity(item.get("case_number")), _norm_identity(item.get("court_name")))
@@ -96,9 +94,6 @@ class CatalogResearchProvider:
             haystack = str(row["normalized_text"])
 
             match_score = int(row.get("catalog_match_score") or 0)
-            # Avoid patterns are guidance, not literal legal text in most YAML
-            # files. Only penalize an unusually strong literal match instead of
-            # silently throwing away a potentially excellent official judgment.
             avoid_hit = any(phrase and phrase in haystack for phrase in avoid_phrases)
             if avoid_hit:
                 match_score = max(0, match_score - 18)
@@ -113,6 +108,11 @@ class CatalogResearchProvider:
                 if normalize_arabic(term) and normalize_arabic(term) in haystack
             ][:3]
             topic_text = "، ".join(matched_topics or subject.priority_topics[:2])
+            pdf_sha = str(row.get("pdf_sha256") or "")
+            if len(pdf_sha) != 64:
+                # A reusable catalog range without the collection fingerprint is
+                # not safe: the remote authority may have replaced the PDF.
+                continue
             result.append(
                 CaseCandidate(
                     title=str(row["title"]),
@@ -124,9 +124,12 @@ class CatalogResearchProvider:
                     pdf_url=str(row["pdf_url"]),
                     pdf_page_start=int(row["page_start"]),
                     pdf_page_end=int(row["page_end"]),
+                    catalog_key=str(row["catalog_key"]),
+                    catalog_pdf_sha256=pdf_sha,
+                    catalog_range_verified=True,
                     legal_issue=f"حكم منشور يتصل بمحاور المقرر: {topic_text}",
                     suitability_reason=(
-                        "مرشح من الفهرس المحلي المبني مباشرة من مجموعة قضائية رسمية؛ "
+                        "مرشح من الفهرس المحلي المتحقق من مجموعة قضائية رسمية؛ "
                         f"درجة المطابقة النصية {match_score}."
                     ),
                     estimated_score=estimated,
@@ -141,7 +144,7 @@ class CatalogResearchProvider:
 
         if progress is not None and result:
             await progress(
-                f"✅ وجد الفهرس المحلي {len(result)} قضية مرشحة من مصادر رسمية دون بحث ويب مدفوع."
+                f"✅ وجد الفهرس المحلي {len(result)} قضية ذات نطاق صفحات موثق دون بحث ويب مدفوع."
             )
         return result
 
@@ -170,13 +173,10 @@ class CatalogFirstResearchProvider:
         limit: int,
         progress: ResearchProgressCallback | None = None,
     ) -> list[CaseCandidate]:
-        # An empty catalog means deployment setup is incomplete, not that the
-        # selected course lacks judgments. Never spend web-search credits to hide
-        # that operational mistake.
-        stats = await self.catalog.store.stats()
+        stats = await self.catalog.store.stats(parser_version=CATALOG_PARSER_VERSION)
         if stats.cases == 0:
             raise CatalogNotReadyError(
-                "Official judicial catalog has not been built on this deployment"
+                "Verified official judicial catalog has not finished rebuilding on this deployment"
             )
 
         local = await self.catalog.search_cases(
@@ -192,7 +192,7 @@ class CatalogFirstResearchProvider:
 
         if progress is not None:
             await progress(
-                "🌐 الفهرس الرسمي موجود لكن نتائجه لهذه المادة غير كافية؛ "
+                "🌐 الفهرس الرسمي المتحقق موجود لكن نتائجه لهذه المادة غير كافية؛ "
                 "سيُستخدم البحث عبر الويب كخيار احتياطي محدود."
             )
         try:
@@ -226,13 +226,6 @@ class CatalogFirstResearchProvider:
 
 
 def _subject_terms(subject: SubjectProfile) -> list[str]:
-    """Build high-recall deterministic terms from one subject knowledge file.
-
-    Search keywords come first because they are intentionally concise. We then
-    preserve full topical phrases and add meaningful Arabic tokens from longer
-    phrases. This makes retrieval robust when a judgment uses only part of the
-    course terminology, while the scoring layer still rewards full-phrase hits.
-    """
     phrases = [
         *subject.search_keywords,
         *subject.priority_topics,

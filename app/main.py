@@ -10,7 +10,12 @@ from aiogram import Bot, Dispatcher
 
 from app.bot.middlewares import AccessMiddleware
 from app.bot.routers import admin_router, start_router, subjects_router
-from app.catalog import CatalogFirstResearchProvider, CatalogResearchProvider, CatalogStore
+from app.catalog import (
+    CATALOG_PARSER_VERSION,
+    CatalogFirstResearchProvider,
+    CatalogResearchProvider,
+    CatalogStore,
+)
 from app.commentary import DeepSeekCommentaryGenerator, DocxRenderer
 from app.core.logging_config import setup_logging
 from app.core.settings import get_settings
@@ -119,9 +124,10 @@ async def run() -> None:
             settings=settings,
         )
 
-    stats = await catalog_store.stats()
+    stats = await catalog_store.stats(parser_version=CATALOG_PARSER_VERSION)
     logger.info(
-        "Official catalog ready cases=%d collections=%d sources=%d catalog_enabled=%s web_fallback=%s",
+        "Verified official catalog generation=v%d cases=%d collections=%d sources=%d catalog_enabled=%s web_fallback=%s",
+        CATALOG_PARSER_VERSION,
         stats.cases,
         stats.collections,
         stats.sources,

@@ -73,13 +73,7 @@ class CatalogStore:
         collection_id: str,
         cases: Iterable[CatalogCase],
     ) -> int:
-        """Atomically replace one indexed source document with a parsed snapshot.
-
-        Parsing happens before this method is called. A crash or malformed PDF can
-        therefore never leave half of a collection committed in the searchable
-        catalog, and a large collection is inserted with one SQLite transaction
-        instead of opening/committing once per judgment.
-        """
+        """Atomically replace one indexed source document with a parsed snapshot."""
         prepared = list(cases)
         if any(case.collection_id != collection_id for case in prepared):
             raise ValueError("All catalog cases must belong to the replaced collection")
@@ -110,12 +104,18 @@ class CatalogStore:
             await db.commit()
             return max(0, cursor.rowcount)
 
-    async def is_document_indexed(self, source_url: str) -> bool:
+    async def is_document_indexed(self, source_url: str, *, parser_version: int | None = None) -> bool:
         async with self._connect() as db:
-            cursor = await db.execute(
-                "SELECT 1 FROM catalog_documents WHERE source_url = ? LIMIT 1",
-                (source_url,),
-            )
+            if parser_version is None:
+                cursor = await db.execute(
+                    "SELECT 1 FROM catalog_documents WHERE source_url = ? LIMIT 1",
+                    (source_url,),
+                )
+            else:
+                cursor = await db.execute(
+                    "SELECT 1 FROM catalog_documents WHERE source_url = ? AND parser_version = ? LIMIT 1",
+                    (source_url, int(parser_version)),
+                )
             return await cursor.fetchone() is not None
 
     async def record_document(
@@ -126,21 +126,30 @@ class CatalogStore:
         source_id: str,
         pdf_sha256: str | None,
         case_count: int,
+        parser_version: int = 1,
     ) -> None:
         async with self._connect() as db:
             await db.execute(
                 """
                 INSERT INTO catalog_documents(
-                    source_url, collection_id, source_id, pdf_sha256, case_count, indexed_at
-                ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    source_url, collection_id, source_id, pdf_sha256, case_count, parser_version, indexed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(source_url) DO UPDATE SET
                     collection_id=excluded.collection_id,
                     source_id=excluded.source_id,
                     pdf_sha256=excluded.pdf_sha256,
                     case_count=excluded.case_count,
+                    parser_version=excluded.parser_version,
                     indexed_at=CURRENT_TIMESTAMP
                 """,
-                (source_url, collection_id, source_id, pdf_sha256, max(0, int(case_count))),
+                (
+                    source_url,
+                    collection_id,
+                    source_id,
+                    pdf_sha256,
+                    max(0, int(case_count)),
+                    max(1, int(parser_version)),
+                ),
             )
             await db.commit()
 
@@ -159,10 +168,6 @@ class CatalogStore:
         if not normalized_terms:
             return []
 
-        # Catalog sizes are expected in the thousands, not millions. A bounded
-        # LIKE prefilter over normalized Arabic is intentionally used instead of
-        # tying correctness to optional SQLite FTS extensions; the second stage
-        # ranks the bounded rows deterministically in Python.
         sql_terms = normalized_terms[:40]
         clauses = " OR ".join("normalized_text LIKE ?" for _ in sql_terms)
         params: list[object] = [f"%{term}%" for term in sql_terms]
@@ -188,8 +193,6 @@ class CatalogStore:
             phrase_hits = 0
             for index, term in enumerate(normalized_terms):
                 if term in haystack:
-                    # Early terms are explicit search keywords/full course topics;
-                    # later terms are recall-expansion tokens and get less weight.
                     match_score += max(1, 14 - min(index, 13))
                     if " " in term:
                         phrase_hits += 1

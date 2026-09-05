@@ -1,3 +1,5 @@
+import asyncio
+import time
 from pathlib import Path
 
 import pytest
@@ -28,7 +30,7 @@ class FakePdfService:
         self.tmp_path = tmp_path
         self.calls = 0
 
-    async def acquire(self, url: str, *, suggested_name: str = "case"):
+    async def acquire(self, url: str, *, suggested_name: str = "case", progress=None):
         self.calls += 1
         if self.calls == 1:
             raise PdfAcquisitionError("first candidate failed")
@@ -39,6 +41,8 @@ class FakePdfService:
         with path.open("wb") as handle:
             writer.write(handle)
         payload = path.read_bytes()
+        if progress is not None:
+            await progress("تم تنزيل ملف تجريبي")
         return PdfArtifact(
             path=path,
             source_url=url,
@@ -108,7 +112,40 @@ async def test_workflow_skips_failed_pdf_and_uses_next_candidate(
     assert pdf.calls == 2
     assert batch.cases[0].candidate.case_number == "222"
     assert "بحث تجريبي" in progress_events
+    assert "تم تنزيل ملف تجريبي" in progress_events
     await service.cleanup_user(1)
+
+
+@pytest.mark.asyncio
+async def test_pdf_stage_does_not_block_asyncio_event_loop(tmp_path: Path) -> None:
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'worker.db'}")
+    await db.initialize()
+    service = CaseWorkflowService(
+        database=db,
+        subject_loader=SubjectLoader(),
+        research_provider=FakeProvider([]),
+        source_registry=SourceRegistry(),
+        pdf_service=FakePdfService(tmp_path),
+        scoring=ScoringPolicy(),
+        settings=Settings(
+            telegram_bot_token="123456:fixture",
+            owner_telegram_id=1,
+            temp_dir=str(tmp_path),
+            pdf_processing_timeout_seconds=2,
+        ),
+    )
+
+    def slow_pdf_parse() -> str:
+        time.sleep(0.20)
+        return "done"
+
+    task = asyncio.create_task(service._run_pdf_stage("فحص", slow_pdf_parse))
+    started = time.monotonic()
+    await asyncio.sleep(0.03)
+    elapsed = time.monotonic() - started
+    # If slow_pdf_parse ran on the event loop, this sleep would be delayed by ~0.20s.
+    assert elapsed < 0.12
+    assert await task == "done"
 
 
 @pytest.mark.asyncio

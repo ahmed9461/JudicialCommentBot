@@ -8,6 +8,7 @@ import logging
 import secrets
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from app.core.settings import Settings
 from app.db import Database
@@ -161,8 +162,7 @@ class CaseWorkflowService:
             await _notify(progress, "⚖️ جاري ترتيب القضايا الموثقة واختيار الأعلى ملاءمة للمقرر…")
             verified.sort(key=lambda item: item.final_score, reverse=True)
             decision = select_candidates(
-                verified,
-                auto_accept_score=self.settings.auto_accept_score,
+                verified, auto_accept_score=self.settings.auto_accept_score,
                 display_count=self.settings.candidate_display_count,
                 min_margin=self.scoring.min_auto_accept_margin,
                 require_margin=self.scoring.require_score_margin,
@@ -203,57 +203,91 @@ class CaseWorkflowService:
             artifact = await self.pdf_service.acquire(
                 pdf_url,
                 suggested_name=candidate.case_number or candidate.title,
+                progress=progress,
             )
             await _notify(
                 progress,
-                f"🔐 تم تنزيل PDF رسمي، جاري فحص سلامة الملف والهوية والبصمة الرقمية…\nعدد الصفحات: {artifact.page_count}",
+                f"🔐 تم تنزيل PDF رسمي بنجاح. جاري التحقق من بنية الحكم وهويته…\nعدد الصفحات: {artifact.page_count}",
             )
 
-            labeled_numbers = labeled_case_numbers_in_pdf(artifact.path)
-            is_compilation = (
-                candidate.has_page_range
-                or len(labeled_numbers) > 1
-                or artifact.page_count > self.settings.compilation_page_threshold
+            # Catalog results already carry a page range, and very large PDFs are
+            # obviously compilations. Do not scan every page merely to prove that
+            # fact; the expensive fallback scan is only used for smaller ambiguous
+            # files. Every pypdf operation is executed in a worker thread so the
+            # Telegram event loop/status ticker stays alive.
+            is_compilation = candidate.has_page_range or (
+                artifact.page_count > self.settings.compilation_page_threshold
             )
+            if not is_compilation:
+                labeled_numbers = await self._run_pdf_stage(
+                    "🔎 جاري فحص ما إذا كان الملف يحتوي أكثر من حكم…",
+                    labeled_case_numbers_in_pdf,
+                    artifact.path,
+                    progress=progress,
+                )
+                is_compilation = len(labeled_numbers) > 1
 
             if is_compilation:
                 await _notify(progress, "📚 المصدر مجموعة أحكام رسمية، جاري عزل صفحات القضية وحدها…")
                 if candidate.has_page_range:
                     assert candidate.pdf_page_start is not None and candidate.pdf_page_end is not None
-                    start_page, end_page, metadata = refine_case_page_range(
+                    start_page, end_page, metadata = await self._run_pdf_stage(
+                        "🧭 جاري تثبيت بداية ونهاية الحكم من الرأس الرسمي…",
+                        refine_case_page_range,
                         artifact.path,
                         hint_start=candidate.pdf_page_start,
                         hint_end=candidate.pdf_page_end,
                         expected_case_number=candidate.case_number,
+                        progress=progress,
                     )
                     candidate = self._apply_verified_metadata(candidate, metadata)
                 else:
                     if not candidate.case_number:
                         raise PdfValidationError("Compilation requires an explicit case number or catalog page range")
-                    start_page, end_page = locate_case_page_range(
-                        artifact.path, candidate.case_number
+                    start_page, end_page = await self._run_pdf_stage(
+                        "🧭 جاري تحديد صفحات القضية داخل المجموعة الرسمية…",
+                        locate_case_page_range,
+                        artifact.path,
+                        candidate.case_number,
+                        progress=progress,
                     )
-                artifact = self._extract_compilation_case(
+                artifact = await self._run_pdf_stage(
+                    f"✂️ تم تحديد صفحات الحكم {start_page}-{end_page}. جاري استخراجها كما هي من الأصل الرسمي…",
+                    self._extract_compilation_case,
                     artifact,
                     start_page=start_page,
                     end_page=end_page,
                     expected_case_number=candidate.case_number,
+                    progress=progress,
                 )
                 artifact_kind = "official_compilation_extract"
 
-            # The official header is the canonical source of identifiers. This
-            # deliberately corrects stale or misparsed catalog metadata instead
-            # of allowing a filename/index number to become the case number.
-            metadata = extract_judgment_metadata_from_pdf(artifact.path)
+            metadata = await self._run_pdf_stage(
+                "🪪 جاري مطابقة رقم القضية والمحكمة وبيانات القرار مع رأس الحكم الرسمي…",
+                extract_judgment_metadata_from_pdf,
+                artifact.path,
+                progress=progress,
+            )
             candidate = self._apply_verified_metadata(candidate, metadata)
 
-            extracted_numbers = labeled_case_numbers_in_pdf(artifact.path)
+            extracted_numbers = await self._run_pdf_stage(
+                "🔍 جاري التأكد أن الملف النهائي يحتوي الحكم المختار فقط…",
+                labeled_case_numbers_in_pdf,
+                artifact.path,
+                progress=progress,
+            )
             if len(extracted_numbers) > 1:
                 raise PdfValidationError("Final PDF still contains more than one labelled judgment")
-            if candidate.case_number and not verify_case_number_in_pdf(
-                artifact.path, candidate.case_number
-            ):
-                raise PdfValidationError("Verified PDF does not contain the canonical case number")
+            if candidate.case_number:
+                number_ok = await self._run_pdf_stage(
+                    "🔐 جاري المطابقة النهائية لرقم القضية داخل ملف الحكم…",
+                    verify_case_number_in_pdf,
+                    artifact.path,
+                    candidate.case_number,
+                    progress=progress,
+                )
+                if not number_ok:
+                    raise PdfValidationError("Verified PDF does not contain the canonical case number")
 
             if await self.database.is_case_used(
                 case_number=candidate.case_number,
@@ -264,10 +298,12 @@ class CaseWorkflowService:
                 await _notify(progress, "♻️ هذه القضية مستخدمة سابقًا، جاري الانتقال لغيرها…")
                 return None
 
-            await _notify(progress, "📖 جاري قراءة نص الحكم والتحقق من أنه صالح للتحليل الأكاديمي…")
-            text = extract_pdf_text(
+            text = await self._run_pdf_stage(
+                "📖 جاري قراءة نص الحكم المتحقق وتجهيزه للتحليل الأكاديمي…",
+                extract_pdf_text,
                 artifact.path,
                 max_chars=self.settings.commentary_input_max_chars,
+                progress=progress,
             )
             if len(text) < self.settings.commentary_min_text_chars:
                 raise PdfValidationError("Judgment PDF contains too little extractable text")
@@ -301,8 +337,37 @@ class CaseWorkflowService:
             if artifact is not None:
                 artifact.path.unlink(missing_ok=True)
             await self.database.release_reservation(token)
-            await _notify(progress, "⚠️ لم يجتز هذا المرشح التحقق، جاري تجربة قضية أخرى…")
+            await _notify(
+                progress,
+                f"⚠️ تعذر التحقق من هذا المرشح ({_short_reason(exc)}). جاري الانتقال تلقائيًا للقضية التالية…",
+            )
             return None
+
+    async def _run_pdf_stage(
+        self,
+        phase: str,
+        func: Callable[..., Any],
+        /,
+        *args: Any,
+        progress: ProgressCallback | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Run blocking pypdf work outside the bot event loop with a stage deadline.
+
+        This is the central guard against the exact failure mode where Telegram's
+        status message froze because PdfReader/extract_text was executing directly
+        on asyncio's event-loop thread.
+        """
+        await _notify(progress, phase)
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(func, *args, **kwargs),
+                timeout=self.settings.pdf_processing_timeout_seconds,
+            )
+        except TimeoutError as exc:
+            raise PdfValidationError(
+                f"PDF processing stage exceeded {self.settings.pdf_processing_timeout_seconds:g}s"
+            ) from exc
 
     def _extract_compilation_case(
         self,
@@ -444,3 +509,10 @@ class CaseWorkflowService:
 async def _notify(progress: ProgressCallback | None, text: str) -> None:
     if progress is not None:
         await progress(text)
+
+
+def _short_reason(exc: Exception) -> str:
+    text = str(exc).strip()
+    if not text:
+        return type(exc).__name__
+    return text[:140]

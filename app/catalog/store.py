@@ -159,6 +159,7 @@ class CatalogStore:
         *,
         preferred_source_ids: tuple[str, ...] = (),
         limit: int = 20,
+        parser_version: int | None = None,
     ) -> list[dict[str, object]]:
         normalized_terms: list[str] = []
         for term in terms:
@@ -169,15 +170,21 @@ class CatalogStore:
             return []
 
         sql_terms = normalized_terms[:40]
-        clauses = " OR ".join("normalized_text LIKE ?" for _ in sql_terms)
+        clauses = " OR ".join("c.normalized_text LIKE ?" for _ in sql_terms)
         params: list[object] = [f"%{term}%" for term in sql_terms]
+        parser_clause = ""
+        if parser_version is not None:
+            parser_clause = " AND d.parser_version = ?"
+            params.append(int(parser_version))
         sql = f"""
-            SELECT catalog_key, collection_id, source_id, source_name, source_url,
-                   pdf_url, pdf_sha256, page_start, page_end, title, case_number,
-                   court_name, judgment_year, extracted_text, normalized_text
-              FROM official_case_catalog
-             WHERE {clauses}
-             ORDER BY indexed_at DESC
+            SELECT c.catalog_key, c.collection_id, c.source_id, c.source_name, c.source_url,
+                   c.pdf_url, c.pdf_sha256, c.page_start, c.page_end, c.title, c.case_number,
+                   c.court_name, c.judgment_year, c.extracted_text, c.normalized_text,
+                   d.parser_version AS parser_version
+              FROM official_case_catalog AS c
+              JOIN catalog_documents AS d ON d.source_url = c.source_url
+             WHERE ({clauses}){parser_clause}
+             ORDER BY c.indexed_at DESC
              LIMIT ?
         """
         params.append(max(40, min(int(limit) * 16, 600)))
@@ -207,10 +214,21 @@ class CatalogStore:
         rows.sort(key=lambda row: int(row["catalog_match_score"]), reverse=True)
         return rows[: max(1, int(limit))]
 
-    async def stats(self) -> CatalogStats:
+    async def stats(self, *, parser_version: int | None = None) -> CatalogStats:
         async with self._connect() as db:
-            cursor = await db.execute(
-                "SELECT COUNT(*), COUNT(DISTINCT collection_id), COUNT(DISTINCT source_id) FROM official_case_catalog"
-            )
+            if parser_version is None:
+                cursor = await db.execute(
+                    "SELECT COUNT(*), COUNT(DISTINCT collection_id), COUNT(DISTINCT source_id) FROM official_case_catalog"
+                )
+            else:
+                cursor = await db.execute(
+                    """
+                    SELECT COUNT(*), COUNT(DISTINCT c.collection_id), COUNT(DISTINCT c.source_id)
+                      FROM official_case_catalog AS c
+                      JOIN catalog_documents AS d ON d.source_url = c.source_url
+                     WHERE d.parser_version = ?
+                    """,
+                    (int(parser_version),),
+                )
             row = await cursor.fetchone()
         return CatalogStats(cases=int(row[0]), collections=int(row[1]), sources=int(row[2]))

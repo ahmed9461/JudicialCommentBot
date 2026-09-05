@@ -39,18 +39,36 @@ class AssignmentService:
             ),
             progress=progress,
         )
-        await _notify(progress, "🧾 تم استلام المسودة، جاري التحقق من الوقائع والبنية والممنوعات…")
-        validate_commentary(draft)
+        await _notify(progress, "🧾 تم استلام المسودة، جاري مطابقة الأرقام والنصوص مع الحكم الرسمي…")
+        validate_commentary(draft, judgment_text=prepared.judgment_text)
         path = self.temp_dir / f"commentary-{secrets.token_hex(8)}.docx"
-        await _notify(progress, "📄 جاري إنشاء ملف Word العربي وتطبيق تنسيق RTL…")
+        candidate = prepared.candidate
+        await _notify(progress, "📄 جاري إنشاء ملف Word وإضافة بيانات الحكم المتحققة…")
         self.renderer.render(
             draft,
             subject_name=subject.name_ar,
             subject_slug=subject.slug,
             output_path=path,
+            case_number=candidate.case_number,
+            court_name=candidate.court_name,
+            judgment_year=candidate.judgment_year,
+            decision_number=candidate.decision_number,
+            decision_date=candidate.decision_date,
+            appeal_court_name=candidate.appeal_court_name,
+            source_name=candidate.source_name,
+            source_url=prepared.artifact.source_url,
         )
         await _notify(progress, "🔍 جاري الفحص النهائي لملف Word قبل الإرسال…")
-        validate_docx_file(path)
+        validate_docx_file(
+            path,
+            expected_metadata={
+                "رقم القضية": candidate.case_number,
+                "المحكمة": candidate.court_name,
+                "سنة القضية": candidate.judgment_year,
+                "رقم قرار الاستئناف": candidate.decision_number,
+                "تاريخ القرار": candidate.decision_date,
+            },
+        )
         return path
 
 

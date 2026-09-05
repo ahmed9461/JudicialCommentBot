@@ -8,6 +8,9 @@ class CaseCandidate(BaseModel):
     case_number: str | None = None
     court_name: str | None = None
     judgment_year: str | None = None
+    decision_number: str | None = None
+    decision_date: str | None = None
+    appeal_court_name: str | None = None
     source_name: str = Field(min_length=2, max_length=200)
     source_url: HttpUrl
     pdf_url: HttpUrl | None = None

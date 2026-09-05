@@ -62,8 +62,12 @@ class Settings(BaseSettings):
 
     pdf_max_bytes: int = 50 * 1024 * 1024
     pdf_max_pages: int = 1500
+    # Hard wall-clock limit for download + basic structural validation.
     pdf_download_timeout_seconds: float = 45.0
     pdf_connect_timeout_seconds: float = 10.0
+    # Maximum time for one CPU-heavy pypdf verification/extraction stage. These
+    # stages run outside the Telegram event loop so progress messages never freeze.
+    pdf_processing_timeout_seconds: float = 90.0
     pdf_max_redirects: int = 5
     compilation_page_threshold: int = 60
     commentary_input_max_chars: int = 70000
@@ -111,6 +115,7 @@ class Settings(BaseSettings):
         "deepseek_preflight_ttl_seconds",
         "pdf_download_timeout_seconds",
         "pdf_connect_timeout_seconds",
+        "pdf_processing_timeout_seconds",
     )
     @classmethod
     def validate_positive_timeouts(cls, value: float) -> float:

@@ -9,7 +9,7 @@ from app.catalog import (
     CatalogStore,
     SubjectSourceMap,
 )
-from app.catalog.indexer import OfficialCatalogIndexer
+from app.catalog.indexer import CATALOG_PARSER_VERSION, OfficialCatalogIndexer
 from app.catalog.models import CatalogCase
 from app.catalog.text import detect_case_number, detect_court_name, normalize_arabic
 from app.db import Database
@@ -26,14 +26,16 @@ async def test_catalog_search_returns_official_candidate_without_web(tmp_path: P
         "ثبتت سوابق المتهم وناقشت المحكمة تشديد العقوبة ثم رأت تخفيف العقوبة "
         "ومراعاة ظروف الجاني وأغراض العقوبة والردع والإصلاح."
     ) * 8
+    source_url = "https://www.moj.gov.sa/fixture.pdf"
     await store.upsert(
         CatalogCase(
             catalog_key="fixture-1",
             collection_id="moj_fixture",
             source_id="ministry_of_justice",
             source_name="وزارة العدل",
-            source_url="https://www.moj.gov.sa/fixture.pdf",
-            pdf_url="https://www.moj.gov.sa/fixture.pdf",
+            source_url=source_url,
+            pdf_url=source_url,
+            pdf_sha256="a" * 64,
             page_start=10,
             page_end=13,
             title="تخفيف العقوبة ومراعاة ظروف الجاني",
@@ -43,6 +45,14 @@ async def test_catalog_search_returns_official_candidate_without_web(tmp_path: P
             text=text,
             normalized_text=normalize_arabic(text),
         )
+    )
+    await store.record_document(
+        source_url=source_url,
+        collection_id="moj_fixture",
+        source_id="ministry_of_justice",
+        pdf_sha256="a" * 64,
+        case_count=1,
+        parser_version=CATALOG_PARSER_VERSION,
     )
 
     class Fallback:
@@ -62,7 +72,49 @@ async def test_catalog_search_returns_official_candidate_without_web(tmp_path: P
     result = await provider.search_cases(subject, excluded_cases=[], limit=1)
     assert result[0].case_number == "12345"
     assert result[0].pdf_page_start == 10
+    assert result[0].catalog_range_verified is True
+    assert result[0].catalog_pdf_sha256 == "a" * 64
     assert fallback.called is False
+
+
+@pytest.mark.asyncio
+async def test_old_parser_rows_are_not_visible_as_verified_catalog(tmp_path: Path) -> None:
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'stale.db'}")
+    await db.initialize()
+    store = CatalogStore(db)
+    text = "رقم القضية: 12345 المحكمة الجزائية الحكم على المتهم " * 20
+    source_url = "https://www.moj.gov.sa/stale.pdf"
+    await store.upsert(
+        CatalogCase(
+            catalog_key="stale",
+            collection_id="stale_collection",
+            source_id="ministry_of_justice",
+            source_name="وزارة العدل",
+            source_url=source_url,
+            pdf_url=source_url,
+            pdf_sha256="b" * 64,
+            page_start=1,
+            page_end=2,
+            title="قضية قديمة",
+            case_number="12345",
+            court_name="المحكمة الجزائية",
+            judgment_year="1445",
+            text=text,
+            normalized_text=normalize_arabic(text),
+        )
+    )
+    await store.record_document(
+        source_url=source_url,
+        collection_id="stale_collection",
+        source_id="ministry_of_justice",
+        pdf_sha256="b" * 64,
+        case_count=1,
+        parser_version=max(1, CATALOG_PARSER_VERSION - 1),
+    )
+    provider = CatalogResearchProvider(store)
+    subject = SubjectLoader().get_subject("criminology_penology")
+    with pytest.raises(CatalogNotReadyError):
+        await provider.search_cases(subject, excluded_cases=[], limit=1)
 
 
 @pytest.mark.asyncio
@@ -99,7 +151,7 @@ def test_every_configured_subject_has_official_source_preferences() -> None:
 
 
 def test_indexer_rejects_toc_like_pages_and_detects_case_starts() -> None:
-    toc = ("رقم القضية 1 رقم القضية 2 رقم القضية 3 رقم القضية 4 رقم القضية 5 " * 20)
+    toc = ("رقم القضية 111 رقم القضية 222 رقم القضية 333 رقم القضية 444 رقم القضية 555 " * 20)
     first = "رقم القضية: 1111 المحكمة الجزائية الدائرة الأولى الحكم على المتهم " + ("وقائع " * 100)
     second = "رقم الدعوى: 2222 المحكمة العامة الدائرة الثانية الحكم في الدعوى " + ("تسبيب " * 100)
     assert OfficialCatalogIndexer._case_starts([toc, first, "تابع الحكم " * 100, second]) == [1, 3]

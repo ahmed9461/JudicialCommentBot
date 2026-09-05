@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from pypdf import PdfWriter
 
 from app.core.settings import Settings
 from app.db import Database
@@ -32,12 +33,17 @@ class FakePdfService:
         if self.calls == 1:
             raise PdfAcquisitionError("first candidate failed")
         path = self.tmp_path / "verified.pdf"
-        path.write_bytes(b"fixture")
+        writer = PdfWriter()
+        writer.add_blank_page(width=595, height=842)
+        writer.add_blank_page(width=595, height=842)
+        with path.open("wb") as handle:
+            writer.write(handle)
+        payload = path.read_bytes()
         return PdfArtifact(
             path=path,
             source_url=url,
             sha256="c" * 64,
-            size_bytes=7,
+            size_bytes=len(payload),
             page_count=2,
         )
 

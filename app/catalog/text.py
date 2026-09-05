@@ -57,7 +57,7 @@ def detect_case_number(text: str) -> str | None:
                 return value
 
     normalized = normalize_arabic(sample)
-    if "لجنه" in normalized or "اللجنه" in normalized:
+    if "لجنة" in normalized or "اللجنة" in normalized:
         match = _DECISION_PATTERN.search(sample)
         if match:
             value = _SPACES.sub("", match.group(1)).strip("-:/")

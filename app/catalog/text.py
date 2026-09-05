@@ -13,16 +13,15 @@ _ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "0123
 _DIACRITICS = re.compile(r"[\u0617-\u061A\u064B-\u0652\u0670\u06D6-\u06ED]")
 _SPACES = re.compile(r"\s+")
 
-# Official publications are not uniform. These patterns deliberately require a
-# clear legal label before accepting a number; a bare number is never promoted
-# to a case identifier.
+# A case identifier must be explicitly labelled as a case/lawsuit number.
+# Decision numbers, page numbers, serial numbers and bare numerals are never
+# promoted to ``case_number``.
 _CASE_PATTERNS = (
     re.compile(
-        r"(?:رقم\s+(?:القضية|الدعوى)|(?:القضية|الدعوى)\s+رقم)\s*[:：\-]?\s*([0-9٠-٩۰-۹/\-ق]+)",
+        r"(?:رقم\s*(?:القضية|القضيـة|الدعوى|الدعـوى)|(?:القضية|القضيـة|الدعوى|الدعـوى)\s*رقم)\s*[:：\-]?\s*([0-9٠-٩۰-۹/\-ق]+)",
         re.I,
     ),
-    re.compile(r"(?:الدعوى|القضية)\s*[:：\-]\s*([0-9٠-٩۰-۹/\-ق]{3,})", re.I),
-    re.compile(r"(?:رقم\s+القرار|القرار\s+رقم)\s*[:：\-]?\s*([0-9٠-٩۰-۹/\-ق]+)", re.I),
+    re.compile(r"(?:الدعوى|الدعـوى|القضية|القضيـة)\s*[:：\-]\s*([0-9٠-٩۰-۹/\-ق]{3,})", re.I),
 )
 _YEAR_PATTERN = re.compile(r"(?:14[0-9]{2})\s*هـ?")
 _COURT_PATTERNS = (

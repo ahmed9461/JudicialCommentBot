@@ -12,7 +12,7 @@ from typing import Any
 
 from app.core.settings import Settings
 from app.db import Database
-from app.knowledge import SubjectLoader
+from app.knowledge import SubjectLoader, SubjectProfile
 from app.pdf import (
     JudgmentMetadata,
     PdfAcquisitionError,
@@ -25,10 +25,17 @@ from app.pdf import (
     labeled_case_numbers_in_pdf,
     locate_case_page_range,
     refine_case_page_range,
+    validate_extracted_judgment_pdf,
     verify_case_number_in_pdf,
 )
 from app.pdf.validation import validate_pdf_file
-from app.ranking import ScoreResult, ScoringPolicy, SelectionDecision, select_candidates
+from app.ranking import (
+    ScoreResult,
+    ScoringPolicy,
+    SelectionDecision,
+    assess_subject_relevance,
+    select_candidates,
+)
 from app.research import CaseCandidate, ResearchProvider
 from app.sources import SourceRegistry
 
@@ -137,6 +144,7 @@ class CaseWorkflowService:
                     )
                     prepared = await self._verify_candidate(
                         candidate,
+                        subject=subject,
                         progress=progress,
                         candidate_index=index,
                         candidate_total=len(candidates),
@@ -157,7 +165,7 @@ class CaseWorkflowService:
                     break
 
             if not verified:
-                raise NoSuitableCasesError("No candidate survived official PDF verification and deduplication")
+                raise NoSuitableCasesError("No candidate survived official PDF verification, direct relevance and deduplication")
 
             await _notify(progress, "⚖️ جاري ترتيب القضايا الموثقة واختيار الأعلى ملاءمة للمقرر…")
             verified.sort(key=lambda item: item.final_score, reverse=True)
@@ -180,6 +188,7 @@ class CaseWorkflowService:
             )
 
     async def _verify_candidate(self, candidate: CaseCandidate,
+                                subject: SubjectProfile,
                                 progress: ProgressCallback | None = None,
                                 candidate_index: int | None = None,
                                 candidate_total: int | None = None) -> PreparedCase | None:
@@ -272,12 +281,21 @@ class CaseWorkflowService:
                 )
                 artifact_kind = "official_compilation_extract"
 
-            metadata = await self._run_pdf_stage(
-                "🪪 جاري مطابقة رقم القضية والمحكمة وبيانات القرار مع رأس الحكم الرسمي…",
-                extract_judgment_metadata_from_pdf,
-                artifact.path,
-                progress=progress,
-            )
+            if artifact_kind == "official_compilation_extract":
+                metadata = await self._run_pdf_stage(
+                    "🧱 جاري التحقق البنيوي أن المقتطف يبدأ بالحكم نفسه ولا يتضمن حكمًا مجاورًا…",
+                    validate_extracted_judgment_pdf,
+                    artifact.path,
+                    candidate.case_number,
+                    progress=progress,
+                )
+            else:
+                metadata = await self._run_pdf_stage(
+                    "🪪 جاري مطابقة رقم القضية والمحكمة وبيانات القرار مع رأس الحكم الرسمي…",
+                    extract_judgment_metadata_from_pdf,
+                    artifact.path,
+                    progress=progress,
+                )
             candidate = self._apply_verified_metadata(candidate, metadata)
 
             extracted_numbers = await self._run_pdf_stage(
@@ -287,7 +305,7 @@ class CaseWorkflowService:
                 progress=progress,
             )
             if len(extracted_numbers) > 1:
-                raise PdfValidationError("Final PDF still contains more than one labelled judgment")
+                raise PdfValidationError("Final PDF still contains more than one primary judgment")
             if candidate.case_number:
                 number_ok = await self._run_pdf_stage(
                     "🔐 جاري المطابقة النهائية لرقم القضية داخل ملف الحكم…",
@@ -297,7 +315,7 @@ class CaseWorkflowService:
                     progress=progress,
                 )
                 if not number_ok:
-                    raise PdfValidationError("Verified PDF does not contain the canonical case number")
+                    raise PdfValidationError("Verified PDF does not contain the canonical case number at its primary header")
 
             if await self.database.is_case_used(
                 case_number=candidate.case_number,
@@ -317,6 +335,25 @@ class CaseWorkflowService:
             )
             if len(text) < self.settings.commentary_min_text_chars:
                 raise PdfValidationError("Judgment PDF contains too little extractable text")
+
+            relevance = assess_subject_relevance(subject, text)
+            if not relevance.accepted:
+                raise PdfValidationError(
+                    "Verified judgment is not directly relevant enough to the selected course"
+                )
+            candidate = candidate.model_copy(
+                update={
+                    "subject_relevance": relevance.score,
+                    "suitability_reason": (
+                        f"اجتاز الحكم المتحقق بوابة الصلة المباشرة بالمقرر ({relevance.score}/40): "
+                        + "، ".join(relevance.matched_terms[:3])
+                    ),
+                }
+            )
+            await _notify(
+                progress,
+                f"🎯 اجتاز الحكم فحص الصلة المباشرة بالمقرر ({relevance.score}/40).",
+            )
 
             score = self.scoring.score(
                 candidate,
@@ -390,13 +427,11 @@ class CaseWorkflowService:
             output_pdf=output,
         )
         artifact.path.unlink(missing_ok=True)
-        numbers = labeled_case_numbers_in_pdf(output)
-        if len(numbers) > 1:
+        try:
+            validate_extracted_judgment_pdf(output, expected_case_number)
+        except Exception:
             output.unlink(missing_ok=True)
-            raise PdfValidationError("Extracted range contains multiple labelled judgments")
-        if expected_case_number and not verify_case_number_in_pdf(output, expected_case_number):
-            output.unlink(missing_ok=True)
-            raise PdfValidationError("Extracted compilation pages do not match the canonical case number")
+            raise
         page_count = validate_pdf_file(output, max_pages=self.settings.pdf_max_pages)
         digest = hashlib.sha256(output.read_bytes()).hexdigest()
         return PdfArtifact(

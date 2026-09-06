@@ -8,6 +8,7 @@ from pathlib import Path
 from docx import Document
 
 from app.core.constants import FORBIDDEN_OUTPUT_MARKERS
+from app.pdf.headers import labeled_case_numbers, normalize_case_number
 
 from .models import CommentaryDraft
 
@@ -43,7 +44,12 @@ def _article_numbers(text: str) -> set[str]:
     }
 
 
-def validate_commentary(draft: CommentaryDraft, *, judgment_text: str | None = None) -> None:
+def validate_commentary(
+    draft: CommentaryDraft,
+    *,
+    judgment_text: str | None = None,
+    expected_case_number: str | None = None,
+) -> None:
     sections = (
         draft.title,
         draft.facts_and_course_link,
@@ -57,6 +63,18 @@ def validate_commentary(draft: CommentaryDraft, *, judgment_text: str | None = N
             raise CommentaryValidationError("Required commentary section is empty")
     joined = "\n".join(sections)
     _validate_text(joined)
+
+    if expected_case_number:
+        expected = normalize_case_number(expected_case_number)
+        foreign = [
+            value
+            for value in labeled_case_numbers(joined)
+            if normalize_case_number(value) != expected
+        ]
+        if foreign:
+            raise CommentaryValidationError(
+                "Commentary mentions a different labelled case number: " + ", ".join(foreign)
+            )
 
     if judgment_text is not None:
         claimed = _article_numbers(joined)

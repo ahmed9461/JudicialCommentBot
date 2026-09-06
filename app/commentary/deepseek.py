@@ -82,6 +82,10 @@ class DeepSeekCommentaryGenerator:
                 "priority_topics": list(subject.priority_topics),
                 "commentary_focus": list(subject.commentary_focus),
             },
+            # Only metadata verified from the final PDF is sent here. Discovery
+            # summaries/"legal_issue" strings are deliberately excluded because
+            # they may describe a neighboring or merely candidate case and must
+            # never contaminate the commentary.
             "case": {
                 "title": candidate.title,
                 "case_number": candidate.case_number,
@@ -90,7 +94,6 @@ class DeepSeekCommentaryGenerator:
                 "decision_number": candidate.decision_number,
                 "decision_date": candidate.decision_date,
                 "appeal_court_name": candidate.appeal_court_name,
-                "legal_issue_from_research": candidate.legal_issue,
                 "source_name": candidate.source_name,
                 "source_url": candidate.source_url_str,
             },

@@ -22,7 +22,7 @@ async def test_catalog_search_returns_official_candidate_without_web(tmp_path: P
     await db.initialize()
     store = CatalogStore(db)
     text = (
-        "رقم القضية: 12345 المحكمة الجزائية الحكم على المتهم. "
+        "محكمة الدرجة الأولى المحكمة الجزائية رقم القضية: 12345 رقم القرار 9988 "
         "ثبتت سوابق المتهم وناقشت المحكمة تشديد العقوبة ثم رأت تخفيف العقوبة "
         "ومراعاة ظروف الجاني وأغراض العقوبة والردع والإصلاح."
     ) * 8
@@ -82,7 +82,7 @@ async def test_old_parser_rows_are_not_visible_as_verified_catalog(tmp_path: Pat
     db = Database(f"sqlite+aiosqlite:///{tmp_path / 'stale.db'}")
     await db.initialize()
     store = CatalogStore(db)
-    text = "رقم القضية: 12345 المحكمة الجزائية الحكم على المتهم " * 20
+    text = "رقم القضية: 12345 المحكمة الجزائية الحكم على المتهم تخفيف العقوبة " * 20
     source_url = "https://www.moj.gov.sa/stale.pdf"
     await store.upsert(
         CatalogCase(
@@ -150,11 +150,26 @@ def test_every_configured_subject_has_official_source_preferences() -> None:
     assert len(loader.list_subjects()) == 34
 
 
-def test_indexer_rejects_toc_like_pages_and_detects_case_starts() -> None:
+def test_indexer_rejects_body_case_reference_and_detects_only_primary_starts() -> None:
     toc = ("رقم القضية 111 رقم القضية 222 رقم القضية 333 رقم القضية 444 رقم القضية 555 " * 20)
-    first = "رقم القضية: 1111 المحكمة الجزائية الدائرة الأولى الحكم على المتهم " + ("وقائع " * 100)
-    second = "رقم الدعوى: 2222 المحكمة العامة الدائرة الثانية الحكم في الدعوى " + ("تسبيب " * 100)
-    assert OfficialCatalogIndexer._case_starts([toc, first, "تابع الحكم " * 100, second]) == [1, 3]
+    body_reference = (
+        "الحمد لله وبعد فقد اطلعنا على اللائحة الاعتراضية ولم نجد ما يؤثر على الحكم، "
+        "كما صدر حكم سابق من الدائرة التجارية في القضية رقم 7844/2 لعام 1433هـ. "
+        "وبعد دراسة الحكم قررت محكمة الاستئناف المصادقة عليه. " * 12
+    )
+    first = (
+        "الرقم التسلسلي 194\nمحكمة الدرجة الأولى: المحكمة العامة بعنيزة\n"
+        "رقم القضية: 35159749 تاريخها: 1435\nمحكمة الاستئناف: محكمة الاستئناف بمنطقة القصيم\n"
+        "رقم القرار: 35388847 تاريخه: 1435/09/19\n" + ("وقائع شراكة سيارات وإقرار " * 80)
+    )
+    second = (
+        "الرقم التسلسلي 195\nمحكمة الدرجة الأولى: المحكمة العامة بالرياض\n"
+        "رقم القضية: 33645244 تاريخها: 1433\nمحكمة الاستئناف: محكمة الاستئناف بمنطقة الرياض\n"
+        "رقم القرار: 35327012 تاريخه: 1435/07/22\n" + ("وقائع مضاربة ومساهمة عقارية " * 80)
+    )
+    assert OfficialCatalogIndexer._case_starts(
+        [toc, body_reference, "تابع الحكم السابق " * 100, first, "تابع القضية " * 100, second]
+    ) == [3, 5]
 
 
 def test_metadata_detection_supports_committee_decisions() -> None:

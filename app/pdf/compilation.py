@@ -59,11 +59,7 @@ def extract_page_range(source_pdf: Path, *, start_page: int, end_page: int, outp
 
 
 def extract_judgment_metadata(text: str, *, require_primary_header: bool = False) -> JudgmentMetadata:
-    """Extract metadata from the leading official judgment header.
-
-    When ``require_primary_header`` is true, narrative references to another case
-    are never accepted as the identity of the current judgment.
-    """
+    """Extract metadata from the leading official judgment header."""
     sample = text[:5000]
     primary = primary_judicial_header(sample)
     if require_primary_header and primary is None:
@@ -91,9 +87,6 @@ def extract_judgment_metadata_from_pdf(path: Path, *, require_primary_header: bo
     first = reader.pages[0].extract_text() or ""
     if require_primary_header:
         return extract_judgment_metadata(first, require_primary_header=True)
-    # Standalone judgments may place some metadata on the second page.  Only the
-    # first two pages are considered; compilation extracts are validated through
-    # their primary first-page header before this fallback is used.
     second = reader.pages[1].extract_text() or "" if len(reader.pages) > 1 else ""
     return extract_judgment_metadata(first + "\n" + second)
 
@@ -110,13 +103,7 @@ def primary_case_numbers_in_pdf(path: Path) -> tuple[str, ...]:
 
 
 def validate_extracted_judgment_pdf(path: Path, expected_case_number: str | None) -> JudgmentMetadata:
-    """Hard gate for a page extract before it can be treated as one judgment.
-
-    The first physical page must be the primary header of the expected case and
-    no later page may start a different judgment.  This catches the exact class
-    of failures where an extract accidentally contains the tail of a previous
-    case or the beginning of the next one.
-    """
+    """Hard gate for a page extract before it can be treated as one judgment."""
     expected = normalize_case_number(expected_case_number) if expected_case_number else None
     reader = PdfReader(str(path), strict=False)
     if not reader.pages:
@@ -146,16 +133,15 @@ def validate_extracted_judgment_pdf(path: Path, expected_case_number: str | None
 
 
 def labeled_case_numbers_in_pdf(path: Path) -> tuple[str, ...]:
-    """Return distinct explicitly-labelled identifiers, including body references."""
-    reader = PdfReader(str(path), strict=False)
-    seen: set[str] = set()
-    result: list[str] = []
-    for page in reader.pages:
-        for value in labeled_case_numbers(page.extract_text() or ""):
-            if value not in seen:
-                seen.add(value)
-                result.append(value)
-    return tuple(result)
+    """Return primary judgment identifiers for PDF-level boundary checks.
+
+    Historically this helper returned every body reference too, which caused
+    legitimate judgments that cited another case to be rejected while still
+    allowing a wrongly prefixed extract.  PDF-level identity checks need primary
+    headers, so the compatibility name now delegates to the boundary-aware
+    implementation.
+    """
+    return primary_case_numbers_in_pdf(path)
 
 
 def refine_case_page_range(
@@ -254,16 +240,24 @@ def verify_case_number_in_pdf(path: Path, case_number: str) -> bool:
     if not expected:
         return False
     reader = PdfReader(str(path), strict=False)
+    if not reader.pages:
+        return False
 
+    first_header = primary_judicial_header(reader.pages[0].extract_text() or "")
     primary: list[str] = []
     for page in reader.pages:
         header = primary_judicial_header(page.extract_text() or "")
         if header:
             primary.append(header.case_number)
     if primary:
-        # If a primary header exists it is authoritative.  A body reference to
-        # the expected number cannot make a different judgment pass validation.
-        return primary[0] == expected and all(value == expected for value in primary)
+        # If any structured primary header exists, the extract must start on it.
+        # This prevents [tail of previous case + target case] from passing merely
+        # because the target identifier appears on a later page.
+        return (
+            first_header is not None
+            and first_header.case_number == expected
+            and all(value == expected for value in primary)
+        )
 
     explicit_numbers: list[str] = []
     for page in reader.pages:

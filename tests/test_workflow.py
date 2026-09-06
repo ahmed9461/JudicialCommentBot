@@ -15,6 +15,12 @@ from app.services.case_workflow import CaseWorkflowService, NoSuitableCasesError
 from app.sources import SourceRegistry
 
 
+LAW_INTRO_TEXT = (
+    "بحث الحكم استعمال الحق وحدود الحق المشروع والتعسف في استعمال الحق، "
+    "وبيّن تطبيق النظام وتفسير النص في ضوء الوقائع الثابتة. " * 24
+)
+
+
 class FakeProvider:
     def __init__(self, candidates):
         self.candidates = candidates
@@ -92,7 +98,7 @@ async def test_workflow_skips_failed_pdf_and_uses_next_candidate(tmp_path: Path,
     pdf = FakePdfService(tmp_path)
     settings = Settings(telegram_bot_token="123456:fixture", owner_telegram_id=1, temp_dir=str(tmp_path), candidate_display_count=1, search_retry_rounds=1, search_candidate_limit=2, commentary_min_text_chars=10)
     monkeypatch.setattr("app.services.case_workflow.verify_case_number_in_pdf", lambda path, number: True)
-    monkeypatch.setattr("app.services.case_workflow.extract_pdf_text", lambda path, max_chars: "نص الحكم القضائي " * 20)
+    monkeypatch.setattr("app.services.case_workflow.extract_pdf_text", lambda path, max_chars: LAW_INTRO_TEXT)
     service = CaseWorkflowService(database=db, subject_loader=SubjectLoader(), research_provider=FakeProvider([candidate("111", 95), candidate("222", 94)]), source_registry=SourceRegistry(), pdf_service=pdf, scoring=ScoringPolicy(), settings=settings)
     progress_events: list[str] = []
 
@@ -115,10 +121,12 @@ async def test_verified_catalog_range_uses_fingerprint_and_does_not_refine_hint(
     service = CaseWorkflowService(database=db, subject_loader=SubjectLoader(), research_provider=FakeProvider([catalog_candidate()]), source_registry=SourceRegistry(), pdf_service=CatalogPdfService(tmp_path), scoring=ScoringPolicy(), settings=settings)
     monkeypatch.setattr("app.services.case_workflow.refine_case_page_range", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("catalog range must not be rediscovered")))
     monkeypatch.setattr(service, "_extract_compilation_case", lambda artifact, **kwargs: PdfArtifact(path=artifact.path, source_url=artifact.source_url, sha256="e" * 64, size_bytes=artifact.size_bytes, page_count=2))
-    monkeypatch.setattr("app.services.case_workflow.extract_judgment_metadata_from_pdf", lambda path: JudgmentMetadata(case_number="777", court_name="المحكمة الجزائية"))
+    verified_metadata = JudgmentMetadata(case_number="777", court_name="المحكمة الجزائية")
+    monkeypatch.setattr("app.services.case_workflow.validate_extracted_judgment_pdf", lambda path, number: verified_metadata)
+    monkeypatch.setattr("app.services.case_workflow.extract_judgment_metadata_from_pdf", lambda path: verified_metadata)
     monkeypatch.setattr("app.services.case_workflow.labeled_case_numbers_in_pdf", lambda path: ("777",))
     monkeypatch.setattr("app.services.case_workflow.verify_case_number_in_pdf", lambda path, number: number == "777")
-    monkeypatch.setattr("app.services.case_workflow.extract_pdf_text", lambda path, max_chars: "نص الحكم القضائي " * 20)
+    monkeypatch.setattr("app.services.case_workflow.extract_pdf_text", lambda path, max_chars: LAW_INTRO_TEXT)
     batch = await service.prepare(1, "law_intro")
     assert batch.cases[0].source_page_start == 2
     assert batch.cases[0].source_page_end == 3

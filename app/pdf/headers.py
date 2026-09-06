@@ -2,8 +2,8 @@
 
 A crucial distinction in judicial compilations is the difference between a
 *primary case header* (the metadata block that starts one published judgment)
-and case numbers merely cited inside the body of another judgment.  Catalog
-boundary detection and runtime verification must use the primary-header parser;
+and case numbers merely cited inside the body of another judgment. Catalog
+boundary detection and runtime verification use the primary-header parser;
 body references are useful for metadata/search only and must never create case
 boundaries.
 """
@@ -34,14 +34,13 @@ _DECISION_PATTERN = re.compile(
     re.I,
 )
 _COMMITTEE_MARKERS = ("لجنة", "اللجنة", "الدائرة الاستئنافية", "الأمانة العامة")
-
-# Strong metadata labels used by Saudi official judicial publications.  These
-# labels identify the summary/header block, unlike ordinary narrative text that
-# may mention a different lawsuit, appeal or precedent.
-_STRUCTURED_MARKERS = (
+_FIRST_INSTANCE_MARKERS = (
     "محكمة الدرجة الأولى",
     "محكمة الدرجه الأولى",
     "محكمة الدرجة الاولي",
+)
+_STRUCTURED_MARKERS = (
+    *_FIRST_INSTANCE_MARKERS,
     "محكمة الاستئناف",
     "رقم القرار",
     "الرقم التسلسلي",
@@ -79,11 +78,9 @@ def normalize_case_number(value: str | None) -> str | None:
 def labeled_case_numbers(text: str, *, allow_committee_decision: bool = True) -> tuple[str, ...]:
     """Return explicitly-labelled judicial identifiers anywhere in the sample.
 
-    This API intentionally includes references in judgment bodies.  It should
-    not be used to create compilation boundaries; use ``primary_judicial_header``
-    for that purpose.
+    This API intentionally includes references in judgment bodies. It must not
+    be used to create compilation boundaries; use ``primary_judicial_header``.
     """
-
     direct = _scan(text, allow_committee_decision=allow_committee_decision)
     if direct:
         return direct
@@ -99,14 +96,12 @@ def first_labeled_case_number(text: str, *, allow_committee_decision: bool = Tru
 def primary_judicial_header(text: str) -> JudicialHeader | None:
     """Return the primary case header only when the page has header evidence.
 
-    A sentence such as ``صدر حكم ... في القضية رقم ...`` inside a judgment is
-    deliberately rejected.  The identifier must occur in the leading metadata
-    zone and be accompanied by structured court/publication labels.  A reversed
-    per-line view is attempted only when the normal extraction has no primary
-    header, which handles Arabic PDFs extracted in visual order without
-    corrupting normally extracted identifiers.
+    Narrative text such as ``صدر حكم ... في القضية رقم ...`` is rejected. A
+    case identifier must occur in the leading metadata zone and be accompanied
+    by either a first-instance court label or multiple other structured labels.
+    This accepts official summary pages that omit an appeal block while keeping
+    body references out of boundary detection.
     """
-
     direct = _primary_scan(text)
     if direct is not None:
         return direct
@@ -120,8 +115,6 @@ def primary_case_number(text: str) -> str | None:
 
 
 def has_judicial_header(text: str) -> bool:
-    """Compatibility helper: true only for a primary case-start header."""
-
     return primary_judicial_header(text) is not None
 
 
@@ -137,6 +130,7 @@ def _primary_scan(text: str) -> JudicialHeader | None:
         return None
 
     marker_count = sum(1 for marker in _STRUCTURED_MARKERS if marker in sample)
+    first_instance = any(marker in sample for marker in _FIRST_INSTANCE_MARKERS)
     committee_context = any(marker in sample for marker in _COMMITTEE_MARKERS)
 
     matches: list[tuple[int, str]] = []
@@ -148,18 +142,24 @@ def _primary_scan(text: str) -> JudicialHeader | None:
             if value and len(value) >= 3:
                 matches.append((match.start(), value))
 
-    # A Ministry/BOG-style case header normally has a case label plus at least
-    # two other structured labels.  Requiring this prevents narrative references
-    # from becoming false case starts.
     if matches:
         matches.sort(key=lambda item: item[0])
         offset, value = matches[0]
+        # ``محكمة الدرجة الأولى`` + an early explicit case label is itself a
+        # strong publication-header signature. Some official entries do not
+        # include appeal metadata on the first summary page. Body references do
+        # not have this first-instance label, so this does not weaken the main
+        # boundary invariant.
+        if first_instance and offset <= 1100:
+            return JudicialHeader(
+                case_number=value,
+                confidence=max(4, marker_count + 3),
+                source="case",
+            )
         confidence = marker_count + (2 if offset <= 900 else 1)
         if marker_count >= 2 and confidence >= 4:
             return JudicialHeader(case_number=value, confidence=confidence, source="case")
 
-    # Some quasi-judicial publications identify the matter primarily by a
-    # decision number.  Accept it only in an unmistakable committee header.
     if committee_context and marker_count >= 1:
         decision = _DECISION_PATTERN.search(sample)
         if decision and decision.start() <= _CASE_LABEL_MAX_OFFSET:

@@ -8,6 +8,7 @@ from pathlib import Path
 import yaml
 
 from app.knowledge import SubjectProfile
+from app.ranking import assess_subject_relevance
 from app.research.models import CaseCandidate
 from app.research.provider import ResearchProgressCallback, ResearchProvider
 
@@ -25,6 +26,7 @@ _STOPWORDS = {
     "تطبيقات", "أثر", "اثر", "مدى", "حالة", "حالات", "يناقش", "تصلح",
     "يمكن", "فيها", "عليه", "عنها", "هذه", "ذلك", "التي", "الذي", "على",
     "إلى", "الى", "عن", "من", "في", "مع", "أو", "او", "بين",
+    "الحق", "الحقوق", "الاختصاص", "النظام", "العامة", "العام", "تنظيم",
 }
 
 
@@ -45,9 +47,10 @@ class SubjectSourceMap:
 class CatalogResearchProvider:
     """Deterministic search over parser-verified official judgments.
 
-    Only rows built by the current catalog parser generation are visible. This
-    prevents a bot restart during catalog rebuilding from serving stale ranges
-    produced by older parsing rules.
+    Catalog SQL/text retrieval is intentionally broad enough to discover likely
+    rows.  Before a row becomes a candidate, the shared strict relevance gate is
+    run over the actual indexed judgment text.  Generic legal overlap therefore
+    cannot promote an unrelated private dispute into a specialist course.
     """
 
     def __init__(self, store: CatalogStore, source_map: SubjectSourceMap | None = None) -> None:
@@ -77,7 +80,7 @@ class CatalogResearchProvider:
         rows = await self.store.search(
             terms,
             preferred_source_ids=self.source_map.preferred_for(subject.slug),
-            limit=max(limit * 4, 20),
+            limit=max(limit * 8, 40),
             parser_version=CATALOG_PARSER_VERSION,
         )
         excluded = {
@@ -85,34 +88,27 @@ class CatalogResearchProvider:
             for item in excluded_cases
             if item.get("case_number") and item.get("court_name")
         }
-        avoid_phrases = [normalize_arabic(value) for value in subject.avoid_case_patterns if value]
         result: list[CaseCandidate] = []
         for row in rows:
             identity = (_norm_identity(row.get("case_number")), _norm_identity(row.get("court_name")))
             if identity in excluded:
                 continue
-            haystack = str(row["normalized_text"])
+
+            judgment_text = str(row.get("extracted_text") or "")
+            relevance = assess_subject_relevance(subject, judgment_text)
+            if not relevance.accepted:
+                continue
 
             match_score = int(row.get("catalog_match_score") or 0)
-            avoid_hit = any(phrase and phrase in haystack for phrase in avoid_phrases)
-            if avoid_hit:
-                match_score = max(0, match_score - 18)
-
-            relevance = min(40, 16 + match_score // 3)
             clarity = 18 if row.get("case_number") else 14
-            reasoning = 13 if len(str(row.get("extracted_text") or "")) >= 1800 else 10
-            commentary = min(15, 8 + match_score // 14)
-            estimated = min(96, relevance + clarity + reasoning + commentary + 10)
-            matched_topics = [
-                term for term in subject.priority_topics
-                if normalize_arabic(term) and normalize_arabic(term) in haystack
-            ][:3]
-            topic_text = "، ".join(matched_topics or subject.priority_topics[:2])
+            reasoning = 13 if len(judgment_text) >= 1800 else 10
+            commentary = min(15, 9 + len(relevance.matched_terms) * 2 + match_score // 30)
+            estimated = min(96, relevance.score + clarity + reasoning + commentary + 10)
+            topic_text = "، ".join(relevance.matched_terms[:3])
             pdf_sha = str(row.get("pdf_sha256") or "")
             if len(pdf_sha) != 64:
-                # A reusable catalog range without the collection fingerprint is
-                # not safe: the remote authority may have replaced the PDF.
                 continue
+
             result.append(
                 CaseCandidate(
                     title=str(row["title"]),
@@ -127,13 +123,16 @@ class CatalogResearchProvider:
                     catalog_key=str(row["catalog_key"]),
                     catalog_pdf_sha256=pdf_sha,
                     catalog_range_verified=True,
-                    legal_issue=f"حكم منشور يتصل بمحاور المقرر: {topic_text}",
+                    legal_issue=(
+                        f"حكم منشور ذو صلة مباشرة بالمقرر عبر: {topic_text}"
+                        if topic_text else "حكم منشور اجتاز بوابة الصلة المباشرة بالمقرر"
+                    ),
                     suitability_reason=(
                         "مرشح من الفهرس المحلي المتحقق من مجموعة قضائية رسمية؛ "
-                        f"درجة المطابقة النصية {match_score}."
+                        f"صلة مباشرة {relevance.score}/40، ومطابقة استرجاع {match_score}."
                     ),
                     estimated_score=estimated,
-                    subject_relevance=relevance,
+                    subject_relevance=relevance.score,
                     legal_issue_clarity=clarity,
                     reasoning_quality=reasoning,
                     academic_commentary_value=commentary,
@@ -142,10 +141,15 @@ class CatalogResearchProvider:
             if len(result) >= limit:
                 break
 
-        if progress is not None and result:
-            await progress(
-                f"✅ وجد الفهرس المحلي {len(result)} قضية ذات نطاق صفحات موثق دون بحث ويب مدفوع."
-            )
+        if progress is not None:
+            if result:
+                await progress(
+                    f"✅ وجد الفهرس المحلي {len(result)} قضية اجتازت التحقق من النطاق والصلة المباشرة بالمقرر."
+                )
+            else:
+                await progress(
+                    "⚠️ توجد نتائج نصية في الفهرس، لكن لم تجتز أي قضية بوابة الصلة المباشرة بالمقرر."
+                )
         return result
 
 
@@ -192,7 +196,7 @@ class CatalogFirstResearchProvider:
 
         if progress is not None:
             await progress(
-                "🌐 الفهرس الرسمي المتحقق موجود لكن نتائجه لهذه المادة غير كافية؛ "
+                "🌐 الفهرس الرسمي المتحقق موجود لكن القضايا ذات الصلة المباشرة غير كافية؛ "
                 "سيُستخدم البحث عبر الويب كخيار احتياطي محدود."
             )
         try:
@@ -226,11 +230,11 @@ class CatalogFirstResearchProvider:
 
 
 def _subject_terms(subject: SubjectProfile) -> list[str]:
+    """Build discovery terms without tokenizing generic suitable-case prose."""
     phrases = [
         *subject.search_keywords,
         *subject.priority_topics,
         *subject.secondary_topics,
-        *subject.suitable_case_patterns,
     ]
     result: list[str] = []
     seen_normalized: set[str] = set()
@@ -244,12 +248,12 @@ def _subject_terms(subject: SubjectProfile) -> list[str]:
 
     for phrase in phrases:
         add(phrase)
-    for phrase in phrases:
+    for phrase in [*subject.search_keywords, *subject.priority_topics]:
         for token in normalize_arabic(phrase).split():
             if len(token) < 4 or token in _STOPWORDS or token.isdigit():
                 continue
             add(token)
-    return result[:48]
+    return result[:40]
 
 
 def _norm_identity(value: object) -> str:

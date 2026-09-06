@@ -73,10 +73,14 @@ class AssignmentService:
             )
             await _notify(
                 progress,
-                "🧾 تم استلام المسودة، جاري مطابقة الأرقام والنصوص مع الحكم الرسمي…",
+                "🧾 تم استلام المسودة، جاري مطابقة الهوية والأرقام والنصوص مع الحكم الرسمي…",
             )
             try:
-                validate_commentary(draft, judgment_text=prepared.judgment_text)
+                validate_commentary(
+                    draft,
+                    judgment_text=prepared.judgment_text,
+                    expected_case_number=prepared.candidate.case_number,
+                )
                 break
             except CommentaryValidationError as exc:
                 if attempt >= self.validation_attempts:
@@ -84,10 +88,11 @@ class AssignmentService:
                 correction_hint = (
                     "المسودة السابقة رفضها المدقق الآلي للسبب التالي: "
                     f"{exc}. صحح هذه النقطة فقط بالاعتماد على نص الحكم المرفق، "
-                    "ولا تضف أي رقم مادة أو واقعة أو مرجع غير ظاهر فيه."
+                    "ولا تضف أي رقم مادة أو واقعة أو قضية أو مرجع غير ظاهر فيه، "
+                    "ولا تستعمل بيانات قضية أخرى ولو كانت مذكورة في وصف سابق."
                 )
 
-        if draft is None:  # Defensive; loop always runs at least once.
+        if draft is None:
             raise RuntimeError("Commentary draft was not produced")
 
         path = self.temp_dir / f"commentary-{secrets.token_hex(8)}.docx"

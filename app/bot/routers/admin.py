@@ -98,26 +98,53 @@ async def catalog_status(message: Message, access_service: AccessService, catalo
     if not access_service.is_owner(requester):
         await message.answer("⛔ هذا الأمر للمالك فقط.")
         return
+
     verified = await catalog_store.stats(parser_version=CATALOG_PARSER_VERSION)
     total = await catalog_store.stats()
-    if verified.cases == 0:
+    state = await catalog_store.generation_state(CATALOG_PARSER_VERSION)
+
+    if not state.is_ready:
+        if state.refresh_status == "running":
+            headline = "⏳ الفهرس القضائي للجيل الحالي قيد البناء الآن."
+        elif state.refresh_status == "failed":
+            headline = "⚠️ آخر محاولة لبناء الفهرس القضائي لم تكتمل."
+        else:
+            headline = "🗂️ الفهرس القضائي للجيل الحالي لم يكتمل بناؤه بعد."
+
         stale_note = ""
-        if total.cases:
-            stale_note = f"\nيوجد {total.cases} سجلًا من جيل فهرسة أقدم، لكنها معطلة ولا تدخل البحث."
+        if total.cases > verified.cases:
+            stale_note = (
+                f"\nيوجد {total.cases - verified.cases} سجلًا من أجيال أقدم، "
+                "لكنها معطلة ولا تدخل البحث."
+            )
+        error_note = f"\nآخر خطأ: {state.last_error}" if state.last_error else ""
         await message.answer(
-            "🗂️ الفهرس القضائي المتحقق غير جاهز بعد.\n"
-            f"جيل الفهرسة الحالي: v{CATALOG_PARSER_VERSION}."
-            f"{stale_note}\n\n"
-            "شغّل/اترك خدمة تحديث الفهرس حتى تكتمل. لن يستخدم البوت سجلات قديمة بدلًا من ذلك."
+            f"{headline}\n"
+            f"جيل الفهرسة: v{CATALOG_PARSER_VERSION}\n"
+            f"السجلات التي ظهرت أثناء البناء: {verified.cases}\n"
+            f"المجموعات التي تمت حتى الآن: {verified.collections}\n"
+            f"الجهات التي تمت حتى الآن: {verified.sources}\n"
+            f"حالة التحديث: {state.refresh_status}"
+            f"{error_note}{stale_note}\n\n"
+            "🔒 هذه السجلات الجزئية لا تُستخدم في البحث حتى يكتمل أول Refresh كامل للجيل."
         )
         return
+
+    refresh_note = ""
+    if state.refresh_status == "running":
+        refresh_note = "\n🔄 يوجد تحديث جديد جارٍ، لكن النسخة المكتملة السابقة من هذا الجيل ما زالت صالحة للبحث."
+    elif state.documents_failed:
+        refresh_note = f"\n⚠️ آخر تحديث اكتمل مع تعذر {state.documents_failed} ملف/ملفات رسمية."
+
     await message.answer(
-        "🗂️ حالة الفهرس القضائي المتحقق:\n"
+        "✅ الفهرس القضائي المتحقق جاهز للبحث:\n"
         f"جيل الفهرسة: v{CATALOG_PARSER_VERSION}\n"
         f"القضايا الجاهزة: {verified.cases}\n"
         f"المجموعات الجاهزة: {verified.collections}\n"
-        f"الجهات الرسمية: {verified.sources}\n\n"
-        "البحث يستخدم هذا الجيل فقط؛ أي سجلات من قواعد فهرسة أقدم لا تُعرض ولا تُستخدم."
+        f"الجهات الرسمية: {verified.sources}\n"
+        f"آخر حالة تحديث: {state.refresh_status}"
+        f"{refresh_note}\n\n"
+        "البحث يستخدم فقط جيلاً أكمل أول بناء كامل؛ السجلات الجزئية أو الأقدم لا تُعامل كفهرس جاهز."
     )
 
 

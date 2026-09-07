@@ -133,4 +133,76 @@ MIGRATIONS: dict[int, str] = {
         last_error TEXT
     );
     """,
+    8: """
+    -- Blue/green catalog generations. A build writes only to its own immutable
+    -- snapshot. Runtime reads a single atomically-promoted active generation.
+    CREATE TABLE IF NOT EXISTS catalog_generations (
+        generation_id TEXT PRIMARY KEY,
+        parser_version INTEGER NOT NULL,
+        status TEXT NOT NULL
+            CHECK(status IN ('building', 'ready', 'failed', 'discarded', 'superseded')),
+        started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        finished_at TEXT,
+        activated_at TEXT,
+        documents_seen INTEGER NOT NULL DEFAULT 0,
+        documents_indexed INTEGER NOT NULL DEFAULT 0,
+        documents_failed INTEGER NOT NULL DEFAULT 0,
+        cases_indexed INTEGER NOT NULL DEFAULT 0,
+        covered_subjects INTEGER NOT NULL DEFAULT 0,
+        total_subjects INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_catalog_generations_parser_status
+        ON catalog_generations(parser_version, status, started_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_catalog_single_build
+        ON catalog_generations((1)) WHERE status = 'building';
+
+    CREATE TABLE IF NOT EXISTS catalog_active_generation (
+        singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+        generation_id TEXT NOT NULL,
+        activated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS catalog_generation_documents (
+        generation_id TEXT NOT NULL,
+        source_url TEXT NOT NULL,
+        collection_id TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        pdf_sha256 TEXT,
+        case_count INTEGER NOT NULL DEFAULT 0,
+        indexed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY(generation_id, source_url)
+    );
+    CREATE INDEX IF NOT EXISTS idx_generation_documents_source
+        ON catalog_generation_documents(generation_id, source_id);
+
+    CREATE TABLE IF NOT EXISTS catalog_generation_cases (
+        generation_id TEXT NOT NULL,
+        catalog_key TEXT NOT NULL,
+        collection_id TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        source_name TEXT NOT NULL,
+        source_url TEXT NOT NULL,
+        pdf_url TEXT NOT NULL,
+        pdf_sha256 TEXT,
+        page_start INTEGER NOT NULL,
+        page_end INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        case_number TEXT,
+        court_name TEXT,
+        judgment_year TEXT,
+        extracted_text TEXT NOT NULL,
+        normalized_text TEXT NOT NULL,
+        indexed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY(generation_id, catalog_key),
+        CHECK(page_start >= 1),
+        CHECK(page_end >= page_start)
+    );
+    CREATE INDEX IF NOT EXISTS idx_generation_cases_collection
+        ON catalog_generation_cases(generation_id, collection_id);
+    CREATE INDEX IF NOT EXISTS idx_generation_cases_source
+        ON catalog_generation_cases(generation_id, source_id);
+    CREATE INDEX IF NOT EXISTS idx_generation_cases_number
+        ON catalog_generation_cases(generation_id, case_number);
+    """,
 }

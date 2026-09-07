@@ -1,10 +1,12 @@
-"""Deterministic subject relevance assessment over verified judgment text.
+"""Deterministic course suitability assessment over verified judgment text.
 
-The catalog search may use broad lexical expansion to find candidates, but a
-candidate is not allowed to survive merely because generic legal words matched.
-This module performs a second, stricter assessment on the actual verified
-judgment text.  It is shared by catalog retrieval and runtime verification for
-all subjects.
+Most law courses require a judgment whose substantive legal issue directly
+matches the course. A small number of methodological courses instead teach how
+to analyse, structure and document legal research. Treating those two kinds of
+course as if they had identical lexical relevance would either reject every
+methodology case or force fake keyword matches. The knowledge profile therefore
+selects one explicit relevance mode and this module evaluates each mode without
+LLM calls.
 """
 
 from __future__ import annotations
@@ -24,6 +26,11 @@ _GENERIC = {
     "في", "من", "على", "عن", "إلى", "الى", "مع", "أو", "او", "بين", "عند",
 }
 
+_METHOD_FACTS = ("الوقائع", "وقائع", "المدعي", "المدعى عليه", "طلب المدعي", "أقام دعواه")
+_METHOD_REASONING = ("الأسباب", "حيث", "ولما", "لما كان", "ثبت", "التسبيب", "مستند الحكم")
+_METHOD_DISPOSITION = ("حكمت", "فحكمت", "قررت", "لذلك", "منطوق الحكم", "الحكم")
+_METHOD_SOURCE = ("رقم القضية", "رقم الدعوى", "رقم الصك", "رقم القرار", "محكمة الاستئناف")
+
 
 @dataclass(frozen=True, slots=True)
 class SubjectRelevanceAssessment:
@@ -36,14 +43,13 @@ class SubjectRelevanceAssessment:
 
 
 def assess_subject_relevance(subject: SubjectProfile, text: str) -> SubjectRelevanceAssessment:
-    """Score direct relation to a course using its editable knowledge file.
+    """Assess whether one *verified* judgment is suitable for the selected course."""
+    if subject.relevance_mode == "methodological":
+        return _assess_methodological(subject, text)
+    return _assess_direct(subject, text)
 
-    Acceptance requires at least one distinctive search-keyword concept (or two
-    priority-topic concepts for broad courses) in the *verified judgment text*.
-    This prevents a generic private dispute from receiving a high score for a
-    course such as constitutional law merely because words like "court",
-    "jurisdiction" or "right" appear somewhere in it.
-    """
+
+def _assess_direct(subject: SubjectProfile, text: str) -> SubjectRelevanceAssessment:
     haystack = _normalize(text)
     keyword_hits = [term for term in subject.search_keywords if _concept_hit(term, haystack)]
     priority_hits = [term for term in subject.priority_topics if _concept_hit(term, haystack)]
@@ -52,10 +58,6 @@ def assess_subject_relevance(subject: SubjectProfile, text: str) -> SubjectRelev
     direct = len(keyword_hits)
     priority = len(priority_hits)
     avoid = len(avoid_hits)
-
-    # Relevance is the 40-point component used by final scoring.  A direct
-    # subject keyword is intentionally worth much more than generic lexical
-    # overlap; avoid-pattern hits reduce but do not by themselves reject.
     score = min(40, 8 + direct * 11 + priority * 5)
     score = max(0, score - avoid * 8)
     accepted = (direct >= 1 or priority >= 2) and score >= 18
@@ -70,13 +72,55 @@ def assess_subject_relevance(subject: SubjectProfile, text: str) -> SubjectRelev
     )
 
 
+def _assess_methodological(subject: SubjectProfile, text: str) -> SubjectRelevanceAssessment:
+    """Score analyzability/traceability instead of pretending a research-method
+    course has a substantive judicial topic.
+
+    A suitable judgment must expose enough of the case lifecycle to let a
+    student separate facts, legal reasoning and disposition and must have enough
+    text to support source-grounded analysis. Generic short orders do not pass.
+    """
+    haystack = _normalize(text)
+    categories: list[str] = []
+    if _any_phrase(_METHOD_FACTS, haystack):
+        categories.append("وقائع واضحة")
+    if _any_phrase(_METHOD_REASONING, haystack):
+        categories.append("تسبيب قابل للتحليل")
+    if _any_phrase(_METHOD_DISPOSITION, haystack):
+        categories.append("منطوق أو نتيجة واضحة")
+    if _any_phrase(_METHOD_SOURCE, haystack):
+        categories.append("بيانات رسمية قابلة للتوثيق")
+
+    avoid_hits = [term for term in subject.avoid_case_patterns if _concept_hit(term, haystack)]
+    length_score = 0
+    if len(text) >= 1200:
+        length_score = 6
+    if len(text) >= 2500:
+        length_score = 10
+    if len(text) >= 5000:
+        length_score = 13
+
+    score = min(40, 9 + len(categories) * 5 + length_score)
+    score = max(0, score - len(avoid_hits) * 8)
+    accepted = len(categories) >= 3 and len(text) >= 1200 and score >= 24
+    return SubjectRelevanceAssessment(
+        score=score,
+        accepted=accepted,
+        direct_keyword_hits=len(categories),
+        priority_hits=0,
+        avoid_hits=len(avoid_hits),
+        matched_terms=tuple(categories),
+    )
+
+
+def _any_phrase(phrases: tuple[str, ...], normalized_haystack: str) -> bool:
+    return any(_normalize(phrase) in normalized_haystack for phrase in phrases)
+
+
 def _concept_hit(phrase: str, normalized_haystack: str) -> bool:
     normalized_phrase = _normalize(phrase)
     if not normalized_phrase:
         return False
-
-    # Exact phrase first; useful for strong concepts such as "مبدأ المشروعية",
-    # "شركة التأمين", "القصد الجنائي" or "الملكية الفكرية".
     if normalized_phrase in normalized_haystack:
         meaningful = _meaningful_tokens(phrase)
         return bool(meaningful)
@@ -87,12 +131,7 @@ def _concept_hit(phrase: str, normalized_haystack: str) -> bool:
     if len(tokens) == 1:
         token = tokens[0]
         return len(token) >= 5 and token in normalized_haystack
-
-    # Arabic judgments often vary connectors/definite articles. Requiring two
-    # distinctive tokens from the same configured concept tolerates wording
-    # variation without reducing relevance to bag-of-generic-words matching.
-    needed = 2 if len(tokens) >= 2 else 1
-    return sum(1 for token in tokens if token in normalized_haystack) >= needed
+    return sum(1 for token in tokens if token in normalized_haystack) >= 2
 
 
 def _meaningful_tokens(value: str) -> tuple[str, ...]:

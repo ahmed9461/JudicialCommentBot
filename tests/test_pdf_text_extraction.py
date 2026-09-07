@@ -14,7 +14,7 @@ def test_dual_engine_prefers_structured_arabic_judicial_text(monkeypatch) -> Non
     monkeypatch.setattr(pdf_text, "_extract_with_mupdf", lambda _path: [structured, "صفحة ثانية"])
 
     pages = pdf_text.extract_pdf_page_texts(Path("fixture.pdf"))
-    assert pages[0] == structured
+    assert pages[0] == structured.strip()
     assert pages[1] == "صفحة ثانية"
 
 
@@ -23,4 +23,4 @@ def test_dual_engine_survives_one_extractor_failure(monkeypatch) -> None:
     monkeypatch.setattr(pdf_text, "_extract_with_pypdf", lambda _path: [])
     monkeypatch.setattr(pdf_text, "_extract_with_mupdf", lambda _path: [text])
 
-    assert pdf_text.extract_pdf_page_texts(Path("fixture.pdf")) == [text]
+    assert pdf_text.extract_pdf_page_texts(Path("fixture.pdf")) == [text.strip()]

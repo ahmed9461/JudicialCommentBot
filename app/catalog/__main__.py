@@ -1,11 +1,7 @@
 """CLI for building and inspecting the official judicial catalog.
 
-Examples:
-    python -m app.catalog stats
-    python -m app.catalog coverage
-    python -m app.catalog refresh
-    python -m app.catalog refresh --source moj_1435 --max-documents 2
-    python -m app.catalog refresh --force
+A full refresh is blue/green: build -> deterministic quality gate -> atomic
+promotion.  The active generation is never mutated in place.
 """
 
 from __future__ import annotations
@@ -25,6 +21,7 @@ from .errors import CatalogNotReadyError
 from .indexer import CATALOG_PARSER_VERSION, OfficialCatalogIndexer
 from .manifest import CatalogManifestLoader
 from .provider import CatalogResearchProvider
+from .quality import evaluate_generation
 from .store import CatalogStore
 
 
@@ -36,28 +33,34 @@ async def _run(args: argparse.Namespace) -> int:
     store = CatalogStore(database)
 
     if args.command == "stats":
-        verified = await store.stats(parser_version=CATALOG_PARSER_VERSION)
-        total = await store.stats()
-        state = await store.generation_state(CATALOG_PARSER_VERSION)
+        active = await store.active_generation_state()
+        latest = await store.latest_generation_state(CATALOG_PARSER_VERSION)
+        if active is None:
+            print(
+                f"parser_version={CATALOG_PARSER_VERSION} active_generation=none "
+                f"latest_generation={(latest.generation_id if latest else 'none')} "
+                f"latest_status={(latest.status if latest else 'none')}"
+            )
+            return 2
+        stats = await store.stats(generation_id=active.generation_id)
         print(
             f"parser_version={CATALOG_PARSER_VERSION} "
-            f"generation_ready={str(state.is_ready).lower()} "
-            f"refresh_status={state.refresh_status} "
-            f"verified_cases={verified.cases} verified_collections={verified.collections} "
-            f"verified_sources={verified.sources} total_rows={total.cases} "
-            f"documents_seen={state.documents_seen} documents_indexed={state.documents_indexed} "
-            f"documents_skipped={state.documents_skipped} documents_failed={state.documents_failed}"
+            f"active_generation={active.generation_id} active_parser={active.parser_version} "
+            f"active_ready={str(active.is_ready and active.parser_version == CATALOG_PARSER_VERSION).lower()} "
+            f"cases={stats.cases} collections={stats.collections} sources={stats.sources} "
+            f"coverage={active.covered_subjects}/{active.total_subjects} "
+            f"latest_generation={(latest.generation_id if latest else 'none')} "
+            f"latest_status={(latest.status if latest else 'none')}"
         )
-        return 0
+        return 0 if active.is_ready and active.parser_version == CATALOG_PARSER_VERSION else 2
 
     if args.command == "coverage":
-        stats = await store.stats(parser_version=CATALOG_PARSER_VERSION)
-        state = await store.generation_state(CATALOG_PARSER_VERSION)
-        if not state.is_ready:
+        active = await store.active_generation_state()
+        if active is None or not active.is_ready or active.parser_version != CATALOG_PARSER_VERSION:
+            latest = await store.latest_generation_state(CATALOG_PARSER_VERSION)
             print(
                 f"catalog_not_ready parser_version={CATALOG_PARSER_VERSION} "
-                f"refresh_status={state.refresh_status} staged_cases={stats.cases}; "
-                "wait for a full: python -m app.catalog refresh"
+                f"latest_status={(latest.status if latest else 'none')}"
             )
             return 2
         loader = SubjectLoader()
@@ -65,10 +68,11 @@ async def _run(args: argparse.Namespace) -> int:
         minimum = max(1, int(args.minimum))
         missing = 0
         thin = 0
-        for subject in loader.list_subjects():
+        for item in loader.list_subjects():
             try:
-                candidates = await provider.search_cases(
-                    loader.get_subject(subject.slug),
+                candidates = await provider.search_generation_cases(
+                    loader.get_subject(item.slug),
+                    generation_id=active.generation_id or "",
                     excluded_cases=[],
                     limit=max(minimum, 5),
                 )
@@ -80,11 +84,10 @@ async def _run(args: argparse.Namespace) -> int:
                 missing += 1
             elif status == "thin":
                 thin += 1
-            print(f"{status}\t{count}\t{subject.slug}\t{subject.name_ar}")
+            print(f"{status}\t{count}\t{item.slug}\t{item.name_ar}")
         print(
-            f"coverage_summary parser_version={CATALOG_PARSER_VERSION} "
-            f"subjects={len(loader.list_subjects())} minimum={minimum} "
-            f"missing={missing} thin={thin}"
+            f"coverage_summary generation={active.generation_id} parser_version={CATALOG_PARSER_VERSION} "
+            f"subjects={len(loader.list_subjects())} minimum={minimum} missing={missing} thin={thin}"
         )
         return 1 if missing else 0
 
@@ -105,26 +108,81 @@ async def _run(args: argparse.Namespace) -> int:
         source_registry=source_registry,
         pdf_service=pdf_service,
     )
+
     report = await indexer.refresh(
         source_filter=set(args.source or []) or None,
         max_documents=args.max_documents,
         force=args.force,
     )
-    stats = await store.stats(parser_version=CATALOG_PARSER_VERSION)
-    state = await store.generation_state(CATALOG_PARSER_VERSION)
+
+    if not report.full_refresh:
+        stats = await store.stats(generation_id=report.generation_id)
+        print(
+            "refresh_diagnostic_complete "
+            f"generation={report.generation_id} parser_version={CATALOG_PARSER_VERSION} "
+            f"documents_seen={report.documents_seen} documents_indexed={report.documents_indexed} "
+            f"documents_failed={report.documents_failed} cases={stats.cases} activated=false"
+        )
+        return 0
+
+    subject_loader = SubjectLoader()
+    provider = CatalogResearchProvider(store)
+    quality = await evaluate_generation(
+        store=store,
+        provider=provider,
+        subject_loader=subject_loader,
+        generation_id=report.generation_id,
+        documents_seen=report.documents_seen,
+        documents_failed=report.documents_failed,
+        min_cases=settings.catalog_min_cases_for_activation,
+        min_candidates_per_subject=settings.catalog_min_candidates_per_subject,
+        required_subject_coverage_percent=settings.catalog_required_subject_coverage_percent,
+        max_document_failure_ratio=settings.catalog_max_document_failure_ratio,
+    )
+
+    if not quality.passed:
+        await store.update_generation_result(
+            report.generation_id,
+            status="failed",
+            documents_seen=report.documents_seen,
+            documents_indexed=report.documents_indexed,
+            documents_failed=report.documents_failed,
+            cases_indexed=report.cases_indexed,
+            covered_subjects=quality.covered_subjects,
+            total_subjects=quality.total_subjects,
+            error=quality.reason,
+        )
+        await store.cleanup_inactive_generations(keep=settings.catalog_keep_inactive_generations)
+        print(
+            "refresh_rejected "
+            f"generation={report.generation_id} parser_version={CATALOG_PARSER_VERSION} "
+            f"cases={quality.cases} collections={quality.collections} sources={quality.sources} "
+            f"coverage={quality.covered_subjects}/{quality.total_subjects} "
+            f"failure_ratio={quality.failure_ratio:.4f} "
+            f"missing_subjects={','.join(quality.missing_subjects) or '-'} "
+            f"reason={quality.reason}"
+        )
+        return 2
+
+    await store.promote_generation(
+        report.generation_id,
+        documents_seen=report.documents_seen,
+        documents_indexed=report.documents_indexed,
+        documents_failed=report.documents_failed,
+        cases_indexed=report.cases_indexed,
+        covered_subjects=quality.covered_subjects,
+        total_subjects=quality.total_subjects,
+    )
+    await store.cleanup_inactive_generations(keep=settings.catalog_keep_inactive_generations)
     print(
         "refresh_complete "
-        f"parser_version={CATALOG_PARSER_VERSION} "
-        f"generation_ready={str(state.is_ready).lower()} "
-        f"refresh_status={state.refresh_status} "
-        f"documents_seen={report.documents_seen} "
-        f"documents_indexed={report.documents_indexed} "
-        f"documents_skipped={report.documents_skipped} "
-        f"documents_failed={report.documents_failed} "
-        f"cases_indexed={report.cases_indexed} "
-        f"verified_catalog_cases={stats.cases}"
+        f"generation={report.generation_id} parser_version={CATALOG_PARSER_VERSION} activated=true "
+        f"documents_seen={report.documents_seen} documents_indexed={report.documents_indexed} "
+        f"documents_failed={report.documents_failed} cases={quality.cases} "
+        f"collections={quality.collections} sources={quality.sources} "
+        f"coverage={quality.covered_subjects}/{quality.total_subjects}"
     )
-    return 0 if state.is_ready or args.source or args.max_documents else 2
+    return 0
 
 
 def main() -> None:
@@ -141,7 +199,7 @@ def main() -> None:
     refresh = sub.add_parser("refresh")
     refresh.add_argument("--source", action="append", help="Manifest source id; may be repeated")
     refresh.add_argument("--max-documents", type=int, default=None)
-    refresh.add_argument("--force", action="store_true", help="Re-index documents already present in the catalog")
+    refresh.add_argument("--force", action="store_true", help="Compatibility flag; generations are always rebuilt")
     raise SystemExit(asyncio.run(_run(parser.parse_args())))
 
 

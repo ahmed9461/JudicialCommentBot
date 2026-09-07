@@ -42,21 +42,6 @@ NEXT_CASE_HEADER = """
 """ + ("أقام المدعي دعواه بطلب رد رأس المال في مساهمة عقارية. " * 30)
 
 
-class FakePage:
-    def __init__(self, text: str) -> None:
-        self.text = text
-
-    def extract_text(self) -> str:
-        return self.text
-
-
-class FakeReader:
-    texts: list[str] = []
-
-    def __init__(self, *args, **kwargs) -> None:
-        self.pages = [FakePage(text) for text in self.texts]
-
-
 def test_body_reference_is_not_a_primary_case_header() -> None:
     assert primary_judicial_header(TAIL_OF_PREVIOUS_CASE) is None
     target = primary_judicial_header(CAR_CASE_HEADER)
@@ -80,15 +65,14 @@ def test_catalog_boundaries_for_real_neighboring_case_shape() -> None:
 def test_runtime_rejects_prefixed_or_multi_case_extract(monkeypatch) -> None:
     import app.pdf.compilation as compilation
 
-    FakeReader.texts = [TAIL_OF_PREVIOUS_CASE, CAR_CASE_HEADER, CAR_CASE_BODY]
-    monkeypatch.setattr(compilation, "PdfReader", FakeReader)
-    assert verify_case_number_in_pdf(Path("prefixed.pdf"), "35159749") is False
-
-    FakeReader.texts = [CAR_CASE_HEADER, CAR_CASE_BODY, NEXT_CASE_HEADER]
-    assert verify_case_number_in_pdf(Path("two-cases.pdf"), "35159749") is False
-
-    FakeReader.texts = [CAR_CASE_HEADER, CAR_CASE_BODY, CAR_CASE_BODY]
-    assert verify_case_number_in_pdf(Path("one-case.pdf"), "35159749") is True
+    scenarios = [
+        ([TAIL_OF_PREVIOUS_CASE, CAR_CASE_HEADER, CAR_CASE_BODY], False),
+        ([CAR_CASE_HEADER, CAR_CASE_BODY, NEXT_CASE_HEADER], False),
+        ([CAR_CASE_HEADER, CAR_CASE_BODY, CAR_CASE_BODY], True),
+    ]
+    for texts, expected in scenarios:
+        monkeypatch.setattr(compilation, "extract_pdf_page_texts", lambda _path, values=texts: values)
+        assert verify_case_number_in_pdf(Path("fixture.pdf"), "35159749") is expected
 
 
 def test_private_car_dispute_is_rejected_for_constitutional_law() -> None:
@@ -119,8 +103,6 @@ def test_commentary_rejects_foreign_case_identity() -> None:
         comment_and_opinion="يستقيم الحكم في حدود الوقائع الثابتة في الملف." * 5,
         references=["الحكم القضائي محل التعليق"],
     )
-    # Adding the identity of a neighboring judgment must fail even if the prose
-    # otherwise looks legally plausible.
     contaminated = draft.model_copy(
         update={"court_reasoning": draft.court_reasoning + " القضية رقم 4487/3."}
     )

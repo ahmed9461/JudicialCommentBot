@@ -3,34 +3,28 @@ from pathlib import Path
 import pytest
 
 from app.catalog import CatalogStore
+from app.catalog.indexer import CATALOG_PARSER_VERSION
 from app.db import Database
 
 
 @pytest.mark.asyncio
-async def test_document_parser_version_controls_reindex(tmp_path: Path) -> None:
-    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'catalog-version.db'}")
+async def test_only_one_catalog_generation_can_build_at_a_time(tmp_path: Path) -> None:
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'catalog-lock.db'}")
     await db.initialize()
     store = CatalogStore(db)
-    url = "https://www.moj.gov.sa/collection.pdf"
 
-    await store.record_document(
-        source_url=url,
-        collection_id="fixture",
-        source_id="ministry_of_justice",
-        pdf_sha256="a" * 64,
-        case_count=10,
-        parser_version=1,
-    )
-    assert await store.is_document_indexed(url)
-    assert await store.is_document_indexed(url, parser_version=1)
-    assert not await store.is_document_indexed(url, parser_version=2)
+    first = await store.begin_generation(CATALOG_PARSER_VERSION)
+    with pytest.raises(RuntimeError, match="already building"):
+        await store.begin_generation(CATALOG_PARSER_VERSION)
 
-    await store.record_document(
-        source_url=url,
-        collection_id="fixture",
-        source_id="ministry_of_justice",
-        pdf_sha256="a" * 64,
-        case_count=10,
-        parser_version=2,
+    await store.update_generation_result(
+        first,
+        status="failed",
+        documents_seen=0,
+        documents_indexed=0,
+        documents_failed=0,
+        cases_indexed=0,
+        error="test cleanup",
     )
-    assert await store.is_document_indexed(url, parser_version=2)
+    second = await store.begin_generation(CATALOG_PARSER_VERSION)
+    assert second != first

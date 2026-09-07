@@ -33,15 +33,25 @@ class CatalogStats:
 
 @dataclass(frozen=True, slots=True)
 class CatalogGenerationState:
+    generation_id: str | None
     parser_version: int
-    is_ready: bool
-    refresh_status: str
-    ready_at: str | None = None
-    refresh_started_at: str | None = None
-    refresh_finished_at: str | None = None
+    status: str
+    is_active: bool = False
+    started_at: str | None = None
+    finished_at: str | None = None
+    activated_at: str | None = None
     documents_seen: int = 0
     documents_indexed: int = 0
-    documents_skipped: int = 0
     documents_failed: int = 0
     cases_indexed: int = 0
+    covered_subjects: int = 0
+    total_subjects: int = 0
     last_error: str | None = None
+
+    @property
+    def is_ready(self) -> bool:
+        return self.status == "ready" and self.is_active
+
+    @property
+    def coverage_complete(self) -> bool:
+        return self.total_subjects > 0 and self.covered_subjects >= self.total_subjects

@@ -99,53 +99,48 @@ async def catalog_status(message: Message, access_service: AccessService, catalo
         await message.answer("⛔ هذا الأمر للمالك فقط.")
         return
 
-    verified = await catalog_store.stats(parser_version=CATALOG_PARSER_VERSION)
-    total = await catalog_store.stats()
-    state = await catalog_store.generation_state(CATALOG_PARSER_VERSION)
+    active = await catalog_store.active_generation_state()
+    latest = await catalog_store.latest_generation_state(CATALOG_PARSER_VERSION)
 
-    if not state.is_ready:
-        if state.refresh_status == "running":
-            headline = "⏳ الفهرس القضائي للجيل الحالي قيد البناء الآن."
-        elif state.refresh_status == "failed":
-            headline = "⚠️ آخر محاولة لبناء الفهرس القضائي لم تكتمل."
-        else:
-            headline = "🗂️ الفهرس القضائي للجيل الحالي لم يكتمل بناؤه بعد."
-
-        stale_note = ""
-        if total.cases > verified.cases:
-            stale_note = (
-                f"\nيوجد {total.cases - verified.cases} سجلًا من أجيال أقدم، "
-                "لكنها معطلة ولا تدخل البحث."
+    if active is None or active.parser_version != CATALOG_PARSER_VERSION or not active.is_ready:
+        latest_text = "لا توجد عملية بناء مسجلة للجيل الحالي."
+        if latest is not None:
+            latest_stats = await catalog_store.stats(generation_id=latest.generation_id)
+            latest_text = (
+                f"آخر نسخة تحت المعالجة: {(latest.generation_id or '')[:8]}\n"
+                f"الحالة: {latest.status}\n"
+                f"القضايا المفهرسة داخلها: {latest_stats.cases}\n"
+                f"التغطية: {latest.covered_subjects}/{latest.total_subjects or 34}"
             )
-        error_note = f"\nآخر خطأ: {state.last_error}" if state.last_error else ""
+            if latest.last_error:
+                latest_text += f"\nسبب عدم الاعتماد: {latest.last_error}"
         await message.answer(
-            f"{headline}\n"
-            f"جيل الفهرسة: v{CATALOG_PARSER_VERSION}\n"
-            f"السجلات التي ظهرت أثناء البناء: {verified.cases}\n"
-            f"المجموعات التي تمت حتى الآن: {verified.collections}\n"
-            f"الجهات التي تمت حتى الآن: {verified.sources}\n"
-            f"حالة التحديث: {state.refresh_status}"
-            f"{error_note}{stale_note}\n\n"
-            "🔒 هذه السجلات الجزئية لا تُستخدم في البحث حتى يكتمل أول Refresh كامل للجيل."
+            "🔒 لا توجد نسخة قضائية مكتملة ومُعتمدة للبحث على Parser الحالي.\n"
+            f"Parser: v{CATALOG_PARSER_VERSION}\n\n"
+            f"{latest_text}\n\n"
+            "البوت لا يبحث داخل نسخة جزئية. البناء يتم في نسخة مستقلة، ثم تُعتمد دفعة واحدة فقط بعد اجتياز اختبارات الجودة والتغطية."
         )
         return
 
-    refresh_note = ""
-    if state.refresh_status == "running":
-        refresh_note = "\n🔄 يوجد تحديث جديد جارٍ، لكن النسخة المكتملة السابقة من هذا الجيل ما زالت صالحة للبحث."
-    elif state.documents_failed:
-        refresh_note = f"\n⚠️ آخر تحديث اكتمل مع تعذر {state.documents_failed} ملف/ملفات رسمية."
-
-    await message.answer(
-        "✅ الفهرس القضائي المتحقق جاهز للبحث:\n"
-        f"جيل الفهرسة: v{CATALOG_PARSER_VERSION}\n"
-        f"القضايا الجاهزة: {verified.cases}\n"
-        f"المجموعات الجاهزة: {verified.collections}\n"
-        f"الجهات الرسمية: {verified.sources}\n"
-        f"آخر حالة تحديث: {state.refresh_status}"
-        f"{refresh_note}\n\n"
-        "البحث يستخدم فقط جيلاً أكمل أول بناء كامل؛ السجلات الجزئية أو الأقدم لا تُعامل كفهرس جاهز."
-    )
+    stats = await catalog_store.stats(generation_id=active.generation_id)
+    lines = [
+        "✅ النسخة القضائية النشطة جاهزة للبحث:",
+        f"Parser: v{active.parser_version}",
+        f"معرّف النسخة: {(active.generation_id or '')[:8]}",
+        f"القضايا: {stats.cases}",
+        f"المجموعات: {stats.collections}",
+        f"الجهات الرسمية: {stats.sources}",
+        f"تغطية المقررات عند الاعتماد: {active.covered_subjects}/{active.total_subjects}",
+    ]
+    if latest is not None and latest.generation_id != active.generation_id:
+        lines.extend([
+            "",
+            "🔄 توجد نسخة أحدث منفصلة عن النسخة النشطة:",
+            f"الحالة: {latest.status}",
+            f"المعرّف: {(latest.generation_id or '')[:8]}",
+            "لن تؤثر على البحث إلا إذا اكتملت واجتازت الجودة ثم تم تبديل النسخة ذريًا.",
+        ])
+    await message.answer("\n".join(lines))
 
 
 @router.callback_query(F.data == "admin:help")

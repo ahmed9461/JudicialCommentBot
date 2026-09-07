@@ -205,4 +205,10 @@ MIGRATIONS: dict[int, str] = {
     CREATE INDEX IF NOT EXISTS idx_generation_cases_number
         ON catalog_generation_cases(generation_id, case_number);
     """,
+    9: """
+    ALTER TABLE catalog_generations ADD COLUMN heartbeat_at TEXT;
+    UPDATE catalog_generations SET heartbeat_at = started_at WHERE heartbeat_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_catalog_generations_heartbeat
+        ON catalog_generations(status, heartbeat_at);
+    """,
 }

@@ -1,4 +1,9 @@
-"""Locate, verify and extract original pages from official judicial compilation PDFs."""
+"""Locate, verify and extract original pages from official judicial compilations.
+
+All textual decisions in this module use the same dual-engine text extraction
+pipeline as catalog indexing. PDF page extraction itself still copies original
+page objects with pypdf; no judgment is re-rendered or reconstructed.
+"""
 
 from __future__ import annotations
 
@@ -15,15 +20,26 @@ from .headers import (
     normalize_case_number,
     primary_judicial_header,
 )
+from .text import extract_pdf_page_texts
 
 _ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
-_DECISION_LABEL = re.compile(r"رقم\s*القرار\s*[:：\-]?\s*([0-9٠-٩۰-۹/\-ق]{3,})", re.I)
-_DECISION_DATE = re.compile(
-    r"رقم\s*القرار\s*[:：\-]?\s*[0-9٠-٩۰-۹/\-ق]{3,}.{0,80}?(?:تاريخه|تاريخ(?:ه)?)\s*[:：\-]?\s*([0-9٠-٩۰-۹/\-]{6,})",
-    re.I | re.S,
+_DECISION_LABELS = (
+    re.compile(r"رقم\s*القرار\s*[:：\-]?\s*([0-9٠-٩۰-۹/\-ق]{3,})", re.I),
+    re.compile(r"رقم\s*قرار\s*التصديق\s*[:：\-]?\s*([0-9٠-٩۰-۹/\-ق]{3,})", re.I),
+    re.compile(r"قرار\s*التصديق\s*رقم\s*[:：\-]?\s*([0-9٠-٩۰-۹/\-ق]{3,})", re.I),
+)
+_DECISION_DATES = (
+    re.compile(
+        r"(?:رقم\s*القرار|رقم\s*قرار\s*التصديق|قرار\s*التصديق\s*رقم)"
+        r"\s*[:：\-]?\s*[0-9٠-٩۰-۹/\-ق]{3,}.{0,120}?"
+        r"(?:تاريخه|تاريخ(?:ه)?)\s*[:：\-]?\s*([0-9٠-٩۰-۹/\-]{6,})",
+        re.I | re.S,
+    ),
 )
 _CASE_YEAR = re.compile(
-    r"رقم\s*(?:القضية|القضيـة|الدعوى|الدعـوى)\s*[:：\-]?\s*[0-9٠-٩۰-۹/\-ق]{3,}.{0,80}?(?:تاريخها|تاريخ(?:ها)?)\s*[:：\-]?\s*(14[0-9٠-٩۰-۹]{2})",
+    r"(?:رقم\s*)?(?:القضية|القضيـة|الدعوى|الدعـوى)(?:\s*رقم)?"
+    r"\s*[:：\-]?\s*[0-9٠-٩۰-۹/\-ق]{3,}.{0,100}?"
+    r"(?:تاريخها|تاريخ(?:ها)?)\s*[:：\-]?\s*(14[0-9٠-٩۰-۹]{2})",
     re.I | re.S,
 )
 _FIRST_COURT = re.compile(r"محكمة\s*الدرجة\s*الأولى\s*[:：\-]?\s*([^\n]{3,180})", re.I)
@@ -59,44 +75,60 @@ def extract_page_range(source_pdf: Path, *, start_page: int, end_page: int, outp
 
 
 def extract_judgment_metadata(text: str, *, require_primary_header: bool = False) -> JudgmentMetadata:
-    """Extract metadata from the leading official judgment header."""
-    sample = text[:5000]
+    """Extract metadata from the leading official judgment publication header."""
+    sample = text[:7000]
+    variants = (sample, "\n".join(line[::-1] for line in sample.splitlines()))
     primary = primary_judicial_header(sample)
     if require_primary_header and primary is None:
         raise PdfValidationError("Judgment extract does not start with a primary judicial header")
     case_number = primary.case_number if primary else first_labeled_case_number(sample)
-    decision_match = _DECISION_LABEL.search(sample)
-    decision_date_match = _DECISION_DATE.search(sample)
-    year_match = _CASE_YEAR.search(sample.translate(_ARABIC_DIGITS))
-    first_court_match = _FIRST_COURT.search(sample)
-    appeal_match = _APPEAL_COURT.search(sample)
+
+    decision_number = None
+    decision_date = None
+    year = None
+    court_name = None
+    appeal_name = None
+    for variant in variants:
+        if decision_number is None:
+            decision_number = _first_group(_DECISION_LABELS, variant)
+        if decision_date is None:
+            decision_date = _first_group(_DECISION_DATES, variant)
+        if year is None:
+            year_match = _CASE_YEAR.search(variant.translate(_ARABIC_DIGITS))
+            year = _digits(year_match.group(1)) if year_match else None
+        if court_name is None:
+            first_court_match = _FIRST_COURT.search(variant)
+            court_name = _court_label(first_court_match.group(1)) if first_court_match else None
+        if appeal_name is None:
+            appeal_match = _APPEAL_COURT.search(variant)
+            appeal_name = _court_label(appeal_match.group(1)) if appeal_match else None
+
     return JudgmentMetadata(
         case_number=case_number,
-        court_name=_court_label(first_court_match.group(1)) if first_court_match else None,
-        judgment_year=_digits(year_match.group(1)) if year_match else None,
-        decision_number=_digits(decision_match.group(1)) if decision_match else None,
-        decision_date=_digits(decision_date_match.group(1)) if decision_date_match else None,
-        appeal_court_name=_court_label(appeal_match.group(1)) if appeal_match else None,
+        court_name=court_name,
+        judgment_year=year,
+        decision_number=_digits(decision_number),
+        decision_date=_digits(decision_date),
+        appeal_court_name=appeal_name,
     )
 
 
 def extract_judgment_metadata_from_pdf(path: Path, *, require_primary_header: bool = False) -> JudgmentMetadata:
-    reader = PdfReader(str(path), strict=False)
-    if not reader.pages:
+    texts = extract_pdf_page_texts(path)
+    if not texts:
         raise PdfValidationError("Judgment PDF has no pages")
-    first = reader.pages[0].extract_text() or ""
+    first = texts[0]
     if require_primary_header:
         return extract_judgment_metadata(first, require_primary_header=True)
-    second = reader.pages[1].extract_text() or "" if len(reader.pages) > 1 else ""
+    second = texts[1] if len(texts) > 1 else ""
     return extract_judgment_metadata(first + "\n" + second)
 
 
 def primary_case_numbers_in_pdf(path: Path) -> tuple[str, ...]:
-    """Return primary case-start identifiers, ignoring references in judgment bodies."""
-    reader = PdfReader(str(path), strict=False)
+    """Return primary case-start identifiers, ignoring body references."""
     result: list[str] = []
-    for page in reader.pages:
-        header = primary_judicial_header(page.extract_text() or "")
+    for text in extract_pdf_page_texts(path):
+        header = primary_judicial_header(text)
         if header and header.case_number not in result:
             result.append(header.case_number)
     return tuple(result)
@@ -105,11 +137,11 @@ def primary_case_numbers_in_pdf(path: Path) -> tuple[str, ...]:
 def validate_extracted_judgment_pdf(path: Path, expected_case_number: str | None) -> JudgmentMetadata:
     """Hard gate for a page extract before it can be treated as one judgment."""
     expected = normalize_case_number(expected_case_number) if expected_case_number else None
-    reader = PdfReader(str(path), strict=False)
-    if not reader.pages:
+    texts = extract_pdf_page_texts(path)
+    if not texts:
         raise PdfValidationError("Extracted judgment PDF has no pages")
 
-    first_text = reader.pages[0].extract_text() or ""
+    first_text = texts[0]
     first_header = primary_judicial_header(first_text)
     if first_header is None:
         raise PdfValidationError("Extracted judgment does not begin at a primary case header")
@@ -119,8 +151,8 @@ def validate_extracted_judgment_pdf(path: Path, expected_case_number: str | None
         )
 
     canonical = first_header.case_number
-    for index, page in enumerate(reader.pages[1:], start=2):
-        header = primary_judicial_header(page.extract_text() or "")
+    for index, text in enumerate(texts[1:], start=2):
+        header = primary_judicial_header(text)
         if header and header.case_number != canonical:
             raise PdfValidationError(
                 f"Extracted judgment contains another primary case header on page {index}: {header.case_number}"
@@ -133,14 +165,6 @@ def validate_extracted_judgment_pdf(path: Path, expected_case_number: str | None
 
 
 def labeled_case_numbers_in_pdf(path: Path) -> tuple[str, ...]:
-    """Return primary judgment identifiers for PDF-level boundary checks.
-
-    Historically this helper returned every body reference too, which caused
-    legitimate judgments that cited another case to be rejected while still
-    allowing a wrongly prefixed extract.  PDF-level identity checks need primary
-    headers, so the compatibility name now delegates to the boundary-aware
-    implementation.
-    """
     return primary_case_numbers_in_pdf(path)
 
 
@@ -153,8 +177,8 @@ def refine_case_page_range(
     max_case_pages: int = 20,
 ) -> tuple[int, int, JudgmentMetadata]:
     """Tighten a non-authoritative page hint to one primary judicial judgment."""
-    reader = PdfReader(str(source_pdf), strict=False)
-    total = len(reader.pages)
+    texts = extract_pdf_page_texts(source_pdf)
+    total = len(texts)
     if hint_start < 1 or hint_end < hint_start or hint_start > total:
         raise PdfValidationError("Invalid catalog page-range hint")
     hint_end = min(hint_end, total)
@@ -162,11 +186,6 @@ def refine_case_page_range(
 
     left = max(0, hint_start - 3)
     right = min(total, max(hint_end + 3, hint_start + max_case_pages + 2))
-    texts: dict[int, str] = {
-        index: (reader.pages[index].extract_text() or "")
-        for index in range(left, right)
-    }
-
     headers: list[tuple[int, str]] = []
     for index in range(left, right):
         header = primary_judicial_header(texts[index])
@@ -189,12 +208,7 @@ def refine_case_page_range(
     else:
         end_index = min(total - 1, start_index + max(1, max_case_pages) - 1, hint_end - 1)
 
-    while end_index > start_index:
-        text = texts.get(end_index)
-        if text is None:
-            text = reader.pages[end_index].extract_text() or ""
-        if not _is_decorative_page(text):
-            break
+    while end_index > start_index and _is_decorative_page(texts[end_index]):
         end_index -= 1
 
     metadata = extract_judgment_metadata(texts[start_index], require_primary_header=True)
@@ -208,11 +222,11 @@ def locate_case_page_range(source_pdf: Path, case_number: str, *, max_case_pages
     expected = normalize_case_number(case_number)
     if not expected:
         raise PdfValidationError("Case number has no stable token for compilation lookup")
-    reader = PdfReader(str(source_pdf), strict=False)
-    total = len(reader.pages)
+    texts = extract_pdf_page_texts(source_pdf)
+    total = len(texts)
     start_index: int | None = None
-    for index in range(total):
-        header = primary_judicial_header(reader.pages[index].extract_text() or "")
+    for index, text in enumerate(texts):
+        header = primary_judicial_header(text)
         if header and header.case_number == expected:
             start_index = index
             break
@@ -222,15 +236,11 @@ def locate_case_page_range(source_pdf: Path, case_number: str, *, max_case_pages
     hard_end = min(total - 1, start_index + max(1, max_case_pages) - 1)
     end_index = hard_end
     for index in range(start_index + 1, hard_end + 1):
-        text = reader.pages[index].extract_text() or ""
-        header = primary_judicial_header(text)
+        header = primary_judicial_header(texts[index])
         if header and header.case_number != expected:
             end_index = index - 1
             break
-    while end_index > start_index:
-        text = reader.pages[end_index].extract_text() or ""
-        if not _is_decorative_page(text):
-            break
+    while end_index > start_index and _is_decorative_page(texts[end_index]):
         end_index -= 1
     return start_index + 1, end_index + 1
 
@@ -239,20 +249,17 @@ def verify_case_number_in_pdf(path: Path, case_number: str) -> bool:
     expected = normalize_case_number(case_number)
     if not expected:
         return False
-    reader = PdfReader(str(path), strict=False)
-    if not reader.pages:
+    texts = extract_pdf_page_texts(path)
+    if not texts:
         return False
 
-    first_header = primary_judicial_header(reader.pages[0].extract_text() or "")
+    first_header = primary_judicial_header(texts[0])
     primary: list[str] = []
-    for page in reader.pages:
-        header = primary_judicial_header(page.extract_text() or "")
+    for text in texts:
+        header = primary_judicial_header(text)
         if header:
             primary.append(header.case_number)
     if primary:
-        # If any structured primary header exists, the extract must start on it.
-        # This prevents [tail of previous case + target case] from passing merely
-        # because the target identifier appears on a later page.
         return (
             first_header is not None
             and first_header.case_number == expected
@@ -260,13 +267,21 @@ def verify_case_number_in_pdf(path: Path, case_number: str) -> bool:
         )
 
     explicit_numbers: list[str] = []
-    for page in reader.pages:
-        explicit_numbers.extend(labeled_case_numbers((page.extract_text() or "")[:8000]))
+    for text in texts:
+        explicit_numbers.extend(labeled_case_numbers(text[:8000]))
     if explicit_numbers:
         return expected in explicit_numbers
 
     tokens = _case_number_tokens(case_number)
-    return any(_tokens_match(page.extract_text() or "", tokens) for page in reader.pages)
+    return any(_tokens_match(text, tokens) for text in texts)
+
+
+def _first_group(patterns: tuple[re.Pattern[str], ...], text: str) -> str | None:
+    for pattern in patterns:
+        match = pattern.search(text)
+        if match:
+            return match.group(1)
+    return None
 
 
 def _case_number_tokens(value: str) -> tuple[str, ...]:

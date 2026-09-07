@@ -28,6 +28,16 @@ _STOPWORDS = {
     "إلى", "الى", "عن", "من", "في", "مع", "أو", "او", "بين",
     "الحق", "الحقوق", "الاختصاص", "النظام", "العامة", "العام", "تنظيم",
 }
+_METHOD_RETRIEVAL_TERMS = [
+    "المدعي",
+    "المدعى عليه",
+    "الوقائع",
+    "حيث",
+    "حكمت",
+    "قررت",
+    "رقم القضية",
+    "رقم الدعوى",
+]
 
 
 class SubjectSourceMap:
@@ -126,6 +136,25 @@ class CatalogResearchProvider:
             if len(pdf_sha) != 64:
                 continue
 
+            if subject.relevance_mode == "methodological":
+                legal_issue = (
+                    f"حكم رسمي صالح للتطبيق المنهجي بسبب: {topic_text}"
+                    if topic_text else "حكم رسمي واضح البنية صالح للتحليل المنهجي"
+                )
+                suitability = (
+                    "مرشح من النسخة القضائية الرسمية النشطة؛ "
+                    f"قابلية التحليل والتوثيق {relevance.score}/40."
+                )
+            else:
+                legal_issue = (
+                    f"حكم منشور ذو صلة مباشرة بالمقرر عبر: {topic_text}"
+                    if topic_text else "حكم منشور اجتاز بوابة الصلة المباشرة بالمقرر"
+                )
+                suitability = (
+                    "مرشح من النسخة القضائية الرسمية النشطة؛ "
+                    f"صلة مباشرة {relevance.score}/40، ومطابقة استرجاع {match_score}."
+                )
+
             result.append(
                 CaseCandidate(
                     title=str(row["title"]),
@@ -140,14 +169,8 @@ class CatalogResearchProvider:
                     catalog_key=str(row["catalog_key"]),
                     catalog_pdf_sha256=pdf_sha,
                     catalog_range_verified=True,
-                    legal_issue=(
-                        f"حكم منشور ذو صلة مباشرة بالمقرر عبر: {topic_text}"
-                        if topic_text else "حكم منشور اجتاز بوابة الصلة المباشرة بالمقرر"
-                    ),
-                    suitability_reason=(
-                        "مرشح من النسخة القضائية الرسمية النشطة؛ "
-                        f"صلة مباشرة {relevance.score}/40، ومطابقة استرجاع {match_score}."
-                    ),
+                    legal_issue=legal_issue,
+                    suitability_reason=suitability,
                     estimated_score=estimated,
                     subject_relevance=relevance.score,
                     legal_issue_clarity=clarity,
@@ -160,13 +183,15 @@ class CatalogResearchProvider:
 
         if progress is not None:
             if result:
+                gate_name = "قابلية التحليل المنهجي" if subject.relevance_mode == "methodological" else "الصلة المباشرة بالمقرر"
                 await progress(
-                    f"✅ وجد الفهرس {len(result)} قضية اجتازت التحقق من النطاق والصلة المباشرة بالمقرر."
+                    f"✅ وجد الفهرس {len(result)} قضية اجتازت التحقق من النطاق و{gate_name}."
                 )
             else:
-                await progress(
-                    "⚠️ النسخة النشطة لا تحتوي قضية تجتاز بوابة الصلة المباشرة لهذا المقرر."
-                )
+                if subject.relevance_mode == "methodological":
+                    await progress("⚠️ النسخة النشطة لا تحتوي حكماً واضح البنية يكفي للتطبيق المنهجي.")
+                else:
+                    await progress("⚠️ النسخة النشطة لا تحتوي قضية تجتاز بوابة الصلة المباشرة لهذا المقرر.")
         return result
 
 
@@ -207,7 +232,7 @@ class CatalogFirstResearchProvider:
 
         if progress is not None:
             await progress(
-                "🌐 النسخة القضائية النشطة مكتملة لكن عدد القضايا المباشرة لهذا المقرر غير كافٍ؛ "
+                "🌐 النسخة القضائية النشطة مكتملة لكن عدد القضايا المناسبة لهذا المقرر غير كافٍ؛ "
                 "سيُستخدم البحث عبر الويب كخيار احتياطي محدود."
             )
         try:
@@ -241,6 +266,12 @@ class CatalogFirstResearchProvider:
 
 
 def _subject_terms(subject: SubjectProfile) -> list[str]:
+    if subject.relevance_mode == "methodological":
+        # Methodology is about analyzability, not a fake substantive legal topic.
+        # Retrieve structurally rich judgments broadly, then the deterministic
+        # methodological gate above checks facts/reasoning/disposition quality.
+        return list(_METHOD_RETRIEVAL_TERMS)
+
     phrases = [
         *subject.search_keywords,
         *subject.priority_topics,

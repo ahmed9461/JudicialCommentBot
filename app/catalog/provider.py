@@ -45,13 +45,7 @@ class SubjectSourceMap:
 
 
 class CatalogResearchProvider:
-    """Deterministic search over parser-verified official judgments.
-
-    Catalog SQL/text retrieval is intentionally broad enough to discover likely
-    rows.  Before a row becomes a candidate, the shared strict relevance gate is
-    run over the actual indexed judgment text.  Generic legal overlap therefore
-    cannot promote an unrelated private dispute into a specialist course.
-    """
+    """Deterministic search over one immutable verified generation."""
 
     def __init__(self, store: CatalogStore, source_map: SubjectSourceMap | None = None) -> None:
         self.store = store
@@ -65,23 +59,46 @@ class CatalogResearchProvider:
         limit: int,
         progress: ResearchProgressCallback | None = None,
     ) -> list[CaseCandidate]:
-        stats = await self.store.stats(parser_version=CATALOG_PARSER_VERSION)
+        active = await self.store.active_generation_state()
+        if active is None or not active.is_ready or active.parser_version != CATALOG_PARSER_VERSION:
+            latest = await self.store.latest_generation_state(CATALOG_PARSER_VERSION)
+            detail = "no active generation for current parser"
+            if latest is not None:
+                detail = f"latest generation={latest.generation_id} status={latest.status}"
+            raise CatalogNotReadyError(detail)
+
         if progress is not None:
+            stats = await self.store.stats(generation_id=active.generation_id)
             await progress(
-                f"🗂️ جاري البحث محليًا في الفهرس القضائي المتحقق…\n"
-                f"الفهرس الجاهز: {stats.cases} قضية من {stats.collections} مجموعة رسمية."
-            )
-        if stats.cases == 0:
-            raise CatalogNotReadyError(
-                "Current verified catalog generation is empty; complete catalog refresh first"
+                f"🗂️ جاري البحث في النسخة القضائية النشطة والمتكاملة…\n"
+                f"النسخة: {(active.generation_id or '')[:8]} | {stats.cases} قضية من {stats.collections} مجموعة رسمية."
             )
 
+        return await self.search_generation_cases(
+            subject,
+            generation_id=active.generation_id or "",
+            excluded_cases=excluded_cases,
+            limit=limit,
+            progress=progress,
+        )
+
+    async def search_generation_cases(
+        self,
+        subject: SubjectProfile,
+        *,
+        generation_id: str,
+        excluded_cases: list[dict[str, str | None]],
+        limit: int,
+        progress: ResearchProgressCallback | None = None,
+    ) -> list[CaseCandidate]:
+        if not generation_id:
+            return []
         terms = _subject_terms(subject)
         rows = await self.store.search(
             terms,
             preferred_source_ids=self.source_map.preferred_for(subject.slug),
             limit=max(limit * 8, 40),
-            parser_version=CATALOG_PARSER_VERSION,
+            generation_id=generation_id,
         )
         excluded = {
             (_norm_identity(item.get("case_number")), _norm_identity(item.get("court_name")))
@@ -128,7 +145,7 @@ class CatalogResearchProvider:
                         if topic_text else "حكم منشور اجتاز بوابة الصلة المباشرة بالمقرر"
                     ),
                     suitability_reason=(
-                        "مرشح من الفهرس المحلي المتحقق من مجموعة قضائية رسمية؛ "
+                        "مرشح من النسخة القضائية الرسمية النشطة؛ "
                         f"صلة مباشرة {relevance.score}/40، ومطابقة استرجاع {match_score}."
                     ),
                     estimated_score=estimated,
@@ -144,17 +161,17 @@ class CatalogResearchProvider:
         if progress is not None:
             if result:
                 await progress(
-                    f"✅ وجد الفهرس المحلي {len(result)} قضية اجتازت التحقق من النطاق والصلة المباشرة بالمقرر."
+                    f"✅ وجد الفهرس {len(result)} قضية اجتازت التحقق من النطاق والصلة المباشرة بالمقرر."
                 )
             else:
                 await progress(
-                    "⚠️ توجد نتائج نصية في الفهرس، لكن لم تجتز أي قضية بوابة الصلة المباشرة بالمقرر."
+                    "⚠️ النسخة النشطة لا تحتوي قضية تجتاز بوابة الصلة المباشرة لهذا المقرر."
                 )
         return result
 
 
 class CatalogFirstResearchProvider:
-    """Use the official local catalog first; call web research only as fallback."""
+    """Use the active official generation first; call web research only as fallback."""
 
     def __init__(
         self,
@@ -177,15 +194,6 @@ class CatalogFirstResearchProvider:
         limit: int,
         progress: ResearchProgressCallback | None = None,
     ) -> list[CaseCandidate]:
-        state = await self.catalog.store.generation_state(CATALOG_PARSER_VERSION)
-        stats = await self.catalog.store.stats(parser_version=CATALOG_PARSER_VERSION)
-        if not state.is_ready:
-            raise CatalogNotReadyError(
-                f"parser=v{CATALOG_PARSER_VERSION}; refresh_status={state.refresh_status}; "
-                f"staged_cases={stats.cases}; staged_collections={stats.collections}; "
-                f"staged_sources={stats.sources}"
-            )
-
         local = await self.catalog.search_cases(
             subject,
             excluded_cases=excluded_cases,
@@ -199,7 +207,7 @@ class CatalogFirstResearchProvider:
 
         if progress is not None:
             await progress(
-                "🌐 الفهرس الرسمي المتحقق موجود لكن القضايا ذات الصلة المباشرة غير كافية؛ "
+                "🌐 النسخة القضائية النشطة مكتملة لكن عدد القضايا المباشرة لهذا المقرر غير كافٍ؛ "
                 "سيُستخدم البحث عبر الويب كخيار احتياطي محدود."
             )
         try:
@@ -211,7 +219,7 @@ class CatalogFirstResearchProvider:
             )
         except Exception:
             if local:
-                logger.exception("Web fallback failed; continuing with local catalog candidates")
+                logger.exception("Web fallback failed; continuing with active catalog candidates")
                 return local[:limit]
             raise
 
@@ -233,7 +241,6 @@ class CatalogFirstResearchProvider:
 
 
 def _subject_terms(subject: SubjectProfile) -> list[str]:
-    """Build discovery terms without tokenizing generic suitable-case prose."""
     phrases = [
         *subject.search_keywords,
         *subject.priority_topics,

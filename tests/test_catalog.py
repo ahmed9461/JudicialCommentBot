@@ -16,11 +16,7 @@ from app.db import Database
 from app.knowledge import SubjectLoader
 
 
-@pytest.mark.asyncio
-async def test_catalog_search_returns_official_candidate_without_web(tmp_path: Path) -> None:
-    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'catalog.db'}")
-    await db.initialize()
-    store = CatalogStore(db)
+async def _insert_verified_fixture(store: CatalogStore) -> str:
     text = (
         "محكمة الدرجة الأولى المحكمة الجزائية رقم القضية: 12345 رقم القرار 9988 "
         "ثبتت سوابق المتهم وناقشت المحكمة تشديد العقوبة ثم رأت تخفيف العقوبة "
@@ -54,6 +50,22 @@ async def test_catalog_search_returns_official_candidate_without_web(tmp_path: P
         case_count=1,
         parser_version=CATALOG_PARSER_VERSION,
     )
+    return source_url
+
+
+@pytest.mark.asyncio
+async def test_catalog_search_returns_official_candidate_without_web(tmp_path: Path) -> None:
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'catalog.db'}")
+    await db.initialize()
+    store = CatalogStore(db)
+    await _insert_verified_fixture(store)
+    await store.finish_generation_refresh(
+        CATALOG_PARSER_VERSION,
+        success=True,
+        documents_seen=1,
+        documents_indexed=1,
+        cases_indexed=1,
+    )
 
     class Fallback:
         called = False
@@ -74,6 +86,32 @@ async def test_catalog_search_returns_official_candidate_without_web(tmp_path: P
     assert result[0].pdf_page_start == 10
     assert result[0].catalog_range_verified is True
     assert result[0].catalog_pdf_sha256 == "a" * 64
+    assert fallback.called is False
+
+
+@pytest.mark.asyncio
+async def test_partial_current_generation_rows_are_not_exposed_before_full_refresh(tmp_path: Path) -> None:
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'partial.db'}")
+    await db.initialize()
+    store = CatalogStore(db)
+    await _insert_verified_fixture(store)
+
+    class Fallback:
+        called = False
+
+        async def search_cases(self, *args, **kwargs):
+            self.called = True
+            return []
+
+    fallback = Fallback()
+    provider = CatalogFirstResearchProvider(
+        catalog=CatalogResearchProvider(store),
+        fallback=fallback,
+    )
+    subject = SubjectLoader().get_subject("criminology_penology")
+    with pytest.raises(CatalogNotReadyError) as error:
+        await provider.search_cases(subject, excluded_cases=[], limit=5)
+    assert "staged_cases=1" in error.value.detail
     assert fallback.called is False
 
 

@@ -38,19 +38,26 @@ async def _run(args: argparse.Namespace) -> int:
     if args.command == "stats":
         verified = await store.stats(parser_version=CATALOG_PARSER_VERSION)
         total = await store.stats()
+        state = await store.generation_state(CATALOG_PARSER_VERSION)
         print(
             f"parser_version={CATALOG_PARSER_VERSION} "
+            f"generation_ready={str(state.is_ready).lower()} "
+            f"refresh_status={state.refresh_status} "
             f"verified_cases={verified.cases} verified_collections={verified.collections} "
-            f"verified_sources={verified.sources} total_rows={total.cases}"
+            f"verified_sources={verified.sources} total_rows={total.cases} "
+            f"documents_seen={state.documents_seen} documents_indexed={state.documents_indexed} "
+            f"documents_skipped={state.documents_skipped} documents_failed={state.documents_failed}"
         )
         return 0
 
     if args.command == "coverage":
         stats = await store.stats(parser_version=CATALOG_PARSER_VERSION)
-        if stats.cases == 0:
+        state = await store.generation_state(CATALOG_PARSER_VERSION)
+        if not state.is_ready:
             print(
-                f"catalog_not_ready parser_version={CATALOG_PARSER_VERSION} cases=0; "
-                "run: python -m app.catalog refresh"
+                f"catalog_not_ready parser_version={CATALOG_PARSER_VERSION} "
+                f"refresh_status={state.refresh_status} staged_cases={stats.cases}; "
+                "wait for a full: python -m app.catalog refresh"
             )
             return 2
         loader = SubjectLoader()
@@ -104,9 +111,12 @@ async def _run(args: argparse.Namespace) -> int:
         force=args.force,
     )
     stats = await store.stats(parser_version=CATALOG_PARSER_VERSION)
+    state = await store.generation_state(CATALOG_PARSER_VERSION)
     print(
         "refresh_complete "
         f"parser_version={CATALOG_PARSER_VERSION} "
+        f"generation_ready={str(state.is_ready).lower()} "
+        f"refresh_status={state.refresh_status} "
         f"documents_seen={report.documents_seen} "
         f"documents_indexed={report.documents_indexed} "
         f"documents_skipped={report.documents_skipped} "
@@ -114,7 +124,7 @@ async def _run(args: argparse.Namespace) -> int:
         f"cases_indexed={report.cases_indexed} "
         f"verified_catalog_cases={stats.cases}"
     )
-    return 0
+    return 0 if state.is_ready or args.source or args.max_documents else 2
 
 
 def main() -> None:

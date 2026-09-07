@@ -1,13 +1,13 @@
 """Shared parsing primitives for official Saudi judicial PDF headers.
 
-Published Saudi judgments do not have one historical layout.  Modern volumes
+Published Saudi judgments do not have one historical layout. Modern volumes
 usually contain ``محكمة الدرجة الأولى`` / ``رقم القضية`` blocks, while older
 Ministry of Justice compilations commonly begin with ``الصك`` / ``الدعوى`` /
 ``قرار التصديق`` plus headings such as ``الموضوعات`` and ``ملخص القضية``.
 Committee decisions use a third layout based on a decision number.
 
-Boundary detection must recognize all of those publication headers while still
-rejecting case numbers merely cited in the reasoning of another judgment.
+Boundary detection recognizes those publication headers while rejecting case
+numbers merely cited in the reasoning of another judgment.
 """
 
 from __future__ import annotations
@@ -39,9 +39,6 @@ _DECISION_PATTERN = re.compile(
     re.I,
 )
 
-# Signals are compared after Arabic/layout normalization, not against the raw
-# extractor output. This tolerates tatweel, diacritics, non-breaking spaces and
-# common Alef/Yeh variants without weakening identifier matching.
 _MODERN_MARKERS = (
     "محكمة الدرجة الاولى",
     "محكمة الاستئناف",
@@ -63,6 +60,7 @@ _LEGACY_MARKERS = (
 )
 _COMMITTEE_MARKERS = (
     "لجنة الفصل",
+    "اللجنة الفصل",
     "اللجنة الابتدائية",
     "اللجنة الاستئنافية",
     "الدائرة الاستئنافية",
@@ -75,8 +73,6 @@ _CASE_LABEL_MAX_OFFSET = 2200
 
 @dataclass(frozen=True, slots=True)
 class JudicialHeader:
-    """One high-confidence primary judicial header found at the start of a page."""
-
     case_number: str
     confidence: int
     source: str = "case"
@@ -93,11 +89,6 @@ def normalize_case_number(value: str | None) -> str | None:
 
 
 def labeled_case_numbers(text: str, *, allow_committee_decision: bool = True) -> tuple[str, ...]:
-    """Return explicitly-labelled judicial identifiers anywhere in the sample.
-
-    References inside a judgment body are intentionally included here.  This
-    helper therefore must never be used to create compilation boundaries.
-    """
     direct = _scan(text, allow_committee_decision=allow_committee_decision)
     if direct:
         return direct
@@ -111,12 +102,9 @@ def first_labeled_case_number(text: str, *, allow_committee_decision: bool = Tru
 
 
 def primary_judicial_header(text: str) -> JudicialHeader | None:
-    """Return a primary publication header, never a body case reference."""
     direct = _primary_scan(text)
     if direct is not None:
         return direct
-    # Several older Arabic PDFs expose glyph order reversed per line. Reversing
-    # each line is deterministic text-layer recovery, not OCR.
     reversed_lines = "\n".join(line[::-1] for line in text.splitlines())
     return _primary_scan(reversed_lines)
 
@@ -142,9 +130,9 @@ def _primary_scan(text: str) -> JudicialHeader | None:
         return None
     normalized = _normalize_search(sample)
 
-    modern_hits = {marker for marker in _MODERN_MARKERS if marker in normalized}
-    legacy_hits = {marker for marker in _LEGACY_MARKERS if marker in normalized}
-    committee_hits = {marker for marker in _COMMITTEE_MARKERS if marker in normalized}
+    modern_hits = {marker for marker in _MODERN_MARKERS if _marker_present(normalized, marker)}
+    legacy_hits = {marker for marker in _LEGACY_MARKERS if _marker_present(normalized, marker)}
+    committee_hits = {marker for marker in _COMMITTEE_MARKERS if _marker_present(normalized, marker)}
 
     matches: list[tuple[int, str]] = []
     for pattern in _CASE_PATTERNS:
@@ -159,52 +147,32 @@ def _primary_scan(text: str) -> JudicialHeader | None:
         matches.sort(key=lambda item: item[0])
         offset, value = matches[0]
 
-        first_instance = "محكمة الدرجة الاولى" in modern_hits
-        # Modern official metadata block.
-        if first_instance and offset <= 1500:
-            return JudicialHeader(
-                case_number=value,
-                confidence=8 + len(modern_hits),
-                source="case-modern",
-            )
+        if "محكمة الدرجة الاولى" in modern_hits and offset <= 1500:
+            return JudicialHeader(value, 8 + len(modern_hits), "case-modern")
 
-        # Legacy MOJ publication block.  The dense combination of an instrument
-        # label with publication headings/appeal metadata distinguishes a real
-        # case-start page from a reasoning paragraph that cites another case.
-        has_instrument = "الصك" in normalized or "رقم الصك" in normalized
+        has_instrument = _marker_present(normalized, "الصك")
         has_legacy_heading = any(
-            marker in normalized
+            _marker_present(normalized, marker)
             for marker in ("الموضوعات", "السند الشرعي", "السند النظامي", "ملخص القضية", "ملخص الدعوى")
         )
-        has_appeal_metadata = "قرار التصديق" in normalized or "محكمة الاستئناف" in normalized
+        has_appeal_metadata = (
+            _marker_present(normalized, "قرار التصديق")
+            or _marker_present(normalized, "محكمة الاستئناف")
+        )
         legacy_confidence = len(legacy_hits) + (2 if has_instrument else 0) + (2 if has_legacy_heading else 0)
         if offset <= 1900 and has_instrument and (has_legacy_heading or has_appeal_metadata) and legacy_confidence >= 5:
-            return JudicialHeader(
-                case_number=value,
-                confidence=legacy_confidence,
-                source="case-legacy",
-            )
+            return JudicialHeader(value, legacy_confidence, "case-legacy")
 
-        # Other structured official layouts: require several independent header
-        # signals. Generic words such as court/right/judgment are not counted.
         structured_count = len(modern_hits | legacy_hits)
         if offset <= 1400 and structured_count >= 3:
-            return JudicialHeader(
-                case_number=value,
-                confidence=structured_count + 3,
-                source="case-structured",
-            )
+            return JudicialHeader(value, structured_count + 3, "case-structured")
 
     if committee_hits:
         decision = _DECISION_PATTERN.search(sample)
         if decision and decision.start() <= _CASE_LABEL_MAX_OFFSET:
             value = normalize_case_number(decision.group(1))
             if value and len(value) >= 3:
-                return JudicialHeader(
-                    case_number=value,
-                    confidence=6 + len(committee_hits),
-                    source="decision",
-                )
+                return JudicialHeader(value, 6 + len(committee_hits), "decision")
     return None
 
 
@@ -224,7 +192,8 @@ def _scan(text: str, *, allow_committee_decision: bool) -> tuple[str, ...]:
                 result.append(value)
         return tuple(result)
 
-    if allow_committee_decision and any(marker in _normalize_search(sample) for marker in _COMMITTEE_MARKERS):
+    normalized = _normalize_search(sample)
+    if allow_committee_decision and any(_marker_present(normalized, marker) for marker in _COMMITTEE_MARKERS):
         result = []
         for match in _DECISION_PATTERN.finditer(sample):
             value = normalize_case_number(match.group(1))
@@ -232,6 +201,10 @@ def _scan(text: str, *, allow_committee_decision: bool) -> tuple[str, ...]:
                 result.append(value)
         return tuple(result)
     return ()
+
+
+def _marker_present(normalized_text: str, marker: str) -> bool:
+    return _normalize_search(marker) in normalized_text
 
 
 def _normalize_search(value: str) -> str:

@@ -117,4 +117,20 @@ MIGRATIONS: dict[int, str] = {
     CREATE INDEX IF NOT EXISTS idx_catalog_documents_parser_version
         ON catalog_documents(parser_version);
     """,
+    7: """
+    CREATE TABLE IF NOT EXISTS catalog_generation_state (
+        parser_version INTEGER PRIMARY KEY,
+        ready_at TEXT,
+        refresh_status TEXT NOT NULL DEFAULT 'idle'
+            CHECK(refresh_status IN ('idle', 'running', 'success', 'failed')),
+        refresh_started_at TEXT,
+        refresh_finished_at TEXT,
+        documents_seen INTEGER NOT NULL DEFAULT 0,
+        documents_indexed INTEGER NOT NULL DEFAULT 0,
+        documents_skipped INTEGER NOT NULL DEFAULT 0,
+        documents_failed INTEGER NOT NULL DEFAULT 0,
+        cases_indexed INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT
+    );
+    """,
 }

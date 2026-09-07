@@ -29,3 +29,19 @@ class CatalogStats:
     cases: int
     collections: int
     sources: int
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogGenerationState:
+    parser_version: int
+    is_ready: bool
+    refresh_status: str
+    ready_at: str | None = None
+    refresh_started_at: str | None = None
+    refresh_finished_at: str | None = None
+    documents_seen: int = 0
+    documents_indexed: int = 0
+    documents_skipped: int = 0
+    documents_failed: int = 0
+    cases_indexed: int = 0
+    last_error: str | None = None

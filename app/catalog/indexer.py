@@ -1,14 +1,16 @@
 """Build reusable local case-catalog snapshots from official Saudi judicial PDFs.
 
-Every refresh is isolated in its own generation.  The indexer never mutates the
-active catalog.  Promotion is performed only after the completed generation
-passes quality gates in the CLI/build coordinator.
+Every refresh is isolated in its own generation. The indexer never mutates the
+active catalog. Text extraction and primary-header recognition are shared with
+runtime verification so a case admitted by the catalog is interpreted by the
+same deterministic machinery when it is later delivered.
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import html
 import logging
 import re
 from collections import deque
@@ -16,10 +18,10 @@ from dataclasses import dataclass
 from urllib.parse import urljoin, urlparse
 
 import httpx
-from pypdf import PdfReader
 
 from app.pdf import PdfAcquisitionError, PdfAcquisitionService, extract_judgment_metadata
 from app.pdf.headers import primary_judicial_header
+from app.pdf.text import extract_pdf_page_texts
 from app.sources import SourceRegistry
 
 from .manifest import CatalogManifest, CatalogSourceSpec
@@ -29,8 +31,8 @@ from .text import detect_court_name, detect_judgment_year, make_title, normalize
 
 logger = logging.getLogger(__name__)
 
-# Increment whenever catalog admission/boundary semantics change.
-CATALOG_PARSER_VERSION = 4
+# Increment whenever extraction/header/boundary admission semantics change.
+CATALOG_PARSER_VERSION = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,10 +69,8 @@ class OfficialCatalogIndexer:
     ) -> IndexReport:
         """Build one complete isolated snapshot.
 
-        ``force`` is retained for CLI compatibility, but a blue/green generation
-        is always a fresh snapshot so there is never any active-row reuse to
-        force.  Partial source/max-document runs are diagnostic generations and
-        are discarded automatically; they can never become active.
+        ``force`` is retained for CLI compatibility. Blue/green generations are
+        always rebuilt from source and partial diagnostic runs are never active.
         """
         del force
         generation_id = await self.store.begin_generation(CATALOG_PARSER_VERSION)
@@ -83,6 +83,7 @@ class OfficialCatalogIndexer:
                 if not spec.enabled or (source_filter and spec.id not in source_filter):
                     continue
                 documents = await self._documents_for(spec)
+                logger.info("Catalog source discovered source=%s documents=%d", spec.id, len(documents))
                 for document_id, url in documents:
                     if remaining is not None and remaining <= 0:
                         break
@@ -170,11 +171,23 @@ class OfficialCatalogIndexer:
         return []
 
     async def _crawl_official_pdfs(self, spec: CatalogSourceSpec) -> list[tuple[str, str]]:
+        """Conservatively discover official PDFs from one official site.
+
+        SharePoint-based Saudi government sites do not always expose document
+        links as simple ``href`` attributes. The crawler therefore understands
+        ordinary links plus embedded/escaped PDF paths, but every discovered URL
+        is still reclassified by SourceRegistry and constrained to configured
+        official path prefixes before admission.
+        """
         queue: deque[tuple[str, int]] = deque((url, 0) for url in spec.landing_pages)
         seen_pages: set[str] = set()
         pdfs: set[str] = set()
-        timeout = httpx.Timeout(20.0, connect=8.0)
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        timeout = httpx.Timeout(30.0, connect=10.0)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (compatible; JudicialCommentBot/1.0; +official-catalog)",
+            "Accept-Language": "ar,en;q=0.8",
+        }
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers=headers) as client:
             while queue and len(seen_pages) < spec.max_pages:
                 url, depth = queue.popleft()
                 if url in seen_pages:
@@ -186,25 +199,34 @@ class OfficialCatalogIndexer:
                 if classification.source_id != spec.source_id:
                     continue
                 try:
-                    response = await client.get(
-                        url,
-                        headers={"User-Agent": "JudicialCommentBot/1.0 catalog-indexer"},
-                    )
+                    response = await client.get(url)
                     response.raise_for_status()
                 except httpx.HTTPError as exc:
                     logger.info("Catalog landing page skipped url=%s reason=%s", url, exc)
                     continue
+
+                final_url = str(response.url)
                 content_type = response.headers.get("content-type", "").lower()
-                if "pdf" in content_type or urlparse(str(response.url)).path.lower().endswith(".pdf"):
-                    final_url = str(response.url)
+                if "pdf" in content_type or urlparse(final_url).path.lower().endswith(".pdf"):
                     if self.source_registry.can_be_original_pdf_source(final_url):
                         pdfs.add(final_url)
                     continue
                 if depth >= spec.max_depth:
                     continue
-                html = response.text
-                for href in re.findall(r'''href\s*=\s*["']([^"']+)["']''', html, flags=re.I):
-                    absolute = urljoin(str(response.url), href)
+
+                body = html.unescape(response.text).replace("\\/", "/")
+                links = set(re.findall(r'''href\s*=\s*["']([^"']+)["']''', body, flags=re.I))
+                # SharePoint/JSON often embeds document URLs without href.
+                links.update(
+                    match.group(1)
+                    for match in re.finditer(
+                        r'''["']((?:https://[^"']+|/[^"']+?)\.pdf(?:\?[^"']*)?)["']''',
+                        body,
+                        flags=re.I,
+                    )
+                )
+                for href in links:
+                    absolute = urljoin(final_url, href.strip())
                     parsed = urlparse(absolute)
                     if parsed.scheme != "https":
                         continue
@@ -212,11 +234,13 @@ class OfficialCatalogIndexer:
                     if classification.source_id != spec.source_id:
                         continue
                     if spec.allowed_path_prefixes and not any(
-                        parsed.path.startswith(prefix) for prefix in spec.allowed_path_prefixes
+                        parsed.path.casefold().startswith(prefix.casefold())
+                        for prefix in spec.allowed_path_prefixes
                     ):
                         continue
                     if parsed.path.lower().endswith(".pdf"):
-                        pdfs.add(absolute)
+                        if self.source_registry.can_be_original_pdf_source(absolute):
+                            pdfs.add(absolute)
                     else:
                         queue.append((absolute, depth + 1))
         return [
@@ -241,12 +265,17 @@ class OfficialCatalogIndexer:
         except PdfAcquisitionError:
             raise
         try:
-            reader = PdfReader(str(artifact.path), strict=False)
-            page_texts = [(page.extract_text() or "").strip() for page in reader.pages]
+            page_texts = extract_pdf_page_texts(artifact.path)
+            text_pages = sum(1 for text in page_texts if len(text.strip()) >= 40)
             starts = self._case_starts(page_texts)
             if not starts:
                 await self.store.replace_collection(generation_id, document_id, [])
-                logger.info("No primary judicial case boundaries detected in %s", url)
+                logger.info(
+                    "No primary judicial case boundaries detected url=%s pages=%d text_pages=%d",
+                    url,
+                    len(page_texts),
+                    text_pages,
+                )
                 return 0, artifact.sha256
 
             parsed_cases: list[CatalogCase] = []
@@ -302,10 +331,12 @@ class OfficialCatalogIndexer:
             indexed = await self.store.replace_collection(generation_id, document_id, parsed_cases)
             if indexed:
                 logger.info(
-                    "Indexed %d primary-header ranges generation=%s document=%s",
+                    "Indexed %d primary-header ranges generation=%s document=%s pages=%d text_pages=%d",
                     indexed,
                     generation_id,
                     url,
+                    len(page_texts),
+                    text_pages,
                 )
             else:
                 logger.info("No usable judgments remained after primary-header verification %s", url)
@@ -319,7 +350,7 @@ class OfficialCatalogIndexer:
         starts: list[int] = []
         previous_case: str | None = None
         for index, text in enumerate(page_texts):
-            if len(text) < 180:
+            if len(text) < 100:
                 continue
             header = primary_judicial_header(text)
             if header is None:

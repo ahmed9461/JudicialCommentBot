@@ -12,20 +12,15 @@ class Settings(BaseSettings):
 
     deepseek_api_key: SecretStr | None = None
     deepseek_base_url: str = "https://api.deepseek.com"
-    # Legacy fallback retained so existing .env files do not break.
     deepseek_model: str = "deepseek-v4-pro"
     deepseek_research_model: str = "deepseek-v4-flash"
     deepseek_commentary_model: str = "deepseek-v4-pro"
 
-    # Responses API calls are streamed. Research and final legal drafting have
-    # different latency profiles, so they intentionally do not share one idle
-    # timeout. These are idle/read deadlines, not total wall-clock deadlines.
     deepseek_connect_timeout_seconds: float = 15.0
     deepseek_stream_idle_timeout_seconds: float = 180.0
     deepseek_commentary_idle_timeout_seconds: float = 420.0
 
-    # Kept only for backwards-compatible parsing of older .env files. The app no
-    # longer uses them as total request deadlines.
+    # Backwards-compatible parsing only; these are no longer total deadlines.
     deepseek_request_timeout_seconds: float = 120.0
     deepseek_research_timeout_seconds: float = 75.0
     deepseek_commentary_timeout_seconds: float = 120.0
@@ -34,15 +29,8 @@ class Settings(BaseSettings):
     deepseek_synthesis_attempts: int = 1
     deepseek_max_search_calls_for_synthesis: int = 6
     deepseek_preflight_ttl_seconds: float = 300.0
-
-    # If a complete model response fails the deterministic commentary validator,
-    # allow one correction pass over the same verified judgment. Network timeouts
-    # are not auto-retried here to avoid silently paying twice for a lost stream.
     commentary_validation_attempts: int = 2
 
-    # DeepSeek V4 defaults to high reasoning if omitted. Search discovery does
-    # not need model reasoning, while structured ranking uses low reasoning and
-    # the final legal commentary keeps high reasoning quality.
     deepseek_research_reasoning_effort: str = "none"
     deepseek_synthesis_reasoning_effort: str = "low"
     deepseek_commentary_reasoning_effort: str = "high"
@@ -53,12 +41,17 @@ class Settings(BaseSettings):
     search_candidate_limit: int = 5
     search_retry_rounds: int = 1
 
-    # Primary discovery path: a reusable local catalog built from official PDF
-    # collections. Web/LLM research is a fallback, never the default search path.
+    # Official catalog is the primary discovery path. A refresh is built as an
+    # isolated snapshot and becomes active only after all activation gates pass.
     catalog_enabled: bool = True
     catalog_fallback_to_web: bool = True
     catalog_min_candidates_before_fallback: int = 3
     catalog_manifest_path: str = "config/catalog_sources.yaml"
+    catalog_min_cases_for_activation: int = 20
+    catalog_min_candidates_per_subject: int = 1
+    catalog_required_subject_coverage_percent: int = 100
+    catalog_max_document_failure_ratio: float = 0.35
+    catalog_keep_inactive_generations: int = 2
 
     temp_dir: str = "runtime/tmp"
     log_level: str = "INFO"
@@ -68,11 +61,8 @@ class Settings(BaseSettings):
 
     pdf_max_bytes: int = 50 * 1024 * 1024
     pdf_max_pages: int = 1500
-    # Hard wall-clock limit for download + basic structural validation.
     pdf_download_timeout_seconds: float = 45.0
     pdf_connect_timeout_seconds: float = 10.0
-    # Maximum time for one CPU-heavy pypdf verification/extraction stage. These
-    # stages run outside the Telegram event loop so progress messages never freeze.
     pdf_processing_timeout_seconds: float = 90.0
     pdf_max_redirects: int = 5
     compilation_page_threshold: int = 60
@@ -97,6 +87,20 @@ class Settings(BaseSettings):
             raise ValueError("AUTO_ACCEPT_SCORE must be between 0 and 100")
         return value
 
+    @field_validator("catalog_required_subject_coverage_percent")
+    @classmethod
+    def validate_coverage_percent(cls, value: int) -> int:
+        if not 1 <= value <= 100:
+            raise ValueError("CATALOG_REQUIRED_SUBJECT_COVERAGE_PERCENT must be 1..100")
+        return value
+
+    @field_validator("catalog_max_document_failure_ratio")
+    @classmethod
+    def validate_failure_ratio(cls, value: float) -> float:
+        if not 0 <= value < 1:
+            raise ValueError("CATALOG_MAX_DOCUMENT_FAILURE_RATIO must be >= 0 and < 1")
+        return value
+
     @field_validator(
         "deepseek_research_attempts",
         "deepseek_synthesis_attempts",
@@ -105,9 +109,12 @@ class Settings(BaseSettings):
         "search_retry_rounds",
         "search_candidate_limit",
         "catalog_min_candidates_before_fallback",
+        "catalog_min_cases_for_activation",
+        "catalog_min_candidates_per_subject",
+        "catalog_keep_inactive_generations",
     )
     @classmethod
-    def validate_positive_attempts(cls, value: int) -> int:
+    def validate_positive_counts(cls, value: int) -> int:
         if value < 1:
             raise ValueError("Retry/attempt/count values must be at least 1")
         return value

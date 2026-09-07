@@ -16,14 +16,21 @@ from app.db import Database
 from app.knowledge import SubjectLoader
 
 
-async def _insert_verified_fixture(store: CatalogStore) -> str:
+async def _insert_fixture(
+    store: CatalogStore,
+    *,
+    parser_version: int = CATALOG_PARSER_VERSION,
+    promote: bool = False,
+) -> tuple[str, str]:
     text = (
         "محكمة الدرجة الأولى المحكمة الجزائية رقم القضية: 12345 رقم القرار 9988 "
         "ثبتت سوابق المتهم وناقشت المحكمة تشديد العقوبة ثم رأت تخفيف العقوبة "
         "ومراعاة ظروف الجاني وأغراض العقوبة والردع والإصلاح."
     ) * 8
     source_url = "https://www.moj.gov.sa/fixture.pdf"
+    generation_id = await store.begin_generation(parser_version)
     await store.upsert(
+        generation_id,
         CatalogCase(
             catalog_key="fixture-1",
             collection_id="moj_fixture",
@@ -40,17 +47,27 @@ async def _insert_verified_fixture(store: CatalogStore) -> str:
             judgment_year="1445",
             text=text,
             normalized_text=normalize_arabic(text),
-        )
+        ),
     )
     await store.record_document(
+        generation_id,
         source_url=source_url,
         collection_id="moj_fixture",
         source_id="ministry_of_justice",
         pdf_sha256="a" * 64,
         case_count=1,
-        parser_version=CATALOG_PARSER_VERSION,
     )
-    return source_url
+    if promote:
+        await store.promote_generation(
+            generation_id,
+            documents_seen=1,
+            documents_indexed=1,
+            documents_failed=0,
+            cases_indexed=1,
+            covered_subjects=34,
+            total_subjects=34,
+        )
+    return generation_id, source_url
 
 
 @pytest.mark.asyncio
@@ -58,14 +75,7 @@ async def test_catalog_search_returns_official_candidate_without_web(tmp_path: P
     db = Database(f"sqlite+aiosqlite:///{tmp_path / 'catalog.db'}")
     await db.initialize()
     store = CatalogStore(db)
-    await _insert_verified_fixture(store)
-    await store.finish_generation_refresh(
-        CATALOG_PARSER_VERSION,
-        success=True,
-        documents_seen=1,
-        documents_indexed=1,
-        cases_indexed=1,
-    )
+    await _insert_fixture(store, promote=True)
 
     class Fallback:
         called = False
@@ -90,64 +100,53 @@ async def test_catalog_search_returns_official_candidate_without_web(tmp_path: P
 
 
 @pytest.mark.asyncio
-async def test_partial_current_generation_rows_are_not_exposed_before_full_refresh(tmp_path: Path) -> None:
+async def test_staging_rows_never_leak_before_atomic_promotion(tmp_path: Path) -> None:
     db = Database(f"sqlite+aiosqlite:///{tmp_path / 'partial.db'}")
     await db.initialize()
     store = CatalogStore(db)
-    await _insert_verified_fixture(store)
+    generation_id, _ = await _insert_fixture(store, promote=False)
+    assert (await store.stats(generation_id=generation_id)).cases == 1
+    assert await store.active_generation_state() is None
 
-    class Fallback:
-        called = False
-
-        async def search_cases(self, *args, **kwargs):
-            self.called = True
-            return []
-
-    fallback = Fallback()
-    provider = CatalogFirstResearchProvider(
-        catalog=CatalogResearchProvider(store),
-        fallback=fallback,
-    )
+    provider = CatalogResearchProvider(store)
     subject = SubjectLoader().get_subject("criminology_penology")
-    with pytest.raises(CatalogNotReadyError) as error:
+    with pytest.raises(CatalogNotReadyError):
         await provider.search_cases(subject, excluded_cases=[], limit=5)
-    assert "staged_cases=1" in error.value.detail
-    assert fallback.called is False
 
 
 @pytest.mark.asyncio
-async def test_old_parser_rows_are_not_visible_as_verified_catalog(tmp_path: Path) -> None:
+async def test_failed_new_generation_does_not_replace_active_snapshot(tmp_path: Path) -> None:
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'bluegreen.db'}")
+    await db.initialize()
+    store = CatalogStore(db)
+    active_id, _ = await _insert_fixture(store, promote=True)
+
+    new_id = await store.begin_generation(CATALOG_PARSER_VERSION)
+    await store.update_generation_result(
+        new_id,
+        status="failed",
+        documents_seen=10,
+        documents_indexed=2,
+        documents_failed=8,
+        cases_indexed=0,
+        error="quality gate failed",
+    )
+    active = await store.active_generation_state()
+    assert active is not None
+    assert active.generation_id == active_id
+    assert active.is_ready is True
+    assert (await store.stats(generation_id=active_id)).cases == 1
+
+
+@pytest.mark.asyncio
+async def test_old_parser_active_generation_is_not_used_by_current_runtime(tmp_path: Path) -> None:
     db = Database(f"sqlite+aiosqlite:///{tmp_path / 'stale.db'}")
     await db.initialize()
     store = CatalogStore(db)
-    text = "رقم القضية: 12345 المحكمة الجزائية الحكم على المتهم تخفيف العقوبة " * 20
-    source_url = "https://www.moj.gov.sa/stale.pdf"
-    await store.upsert(
-        CatalogCase(
-            catalog_key="stale",
-            collection_id="stale_collection",
-            source_id="ministry_of_justice",
-            source_name="وزارة العدل",
-            source_url=source_url,
-            pdf_url=source_url,
-            pdf_sha256="b" * 64,
-            page_start=1,
-            page_end=2,
-            title="قضية قديمة",
-            case_number="12345",
-            court_name="المحكمة الجزائية",
-            judgment_year="1445",
-            text=text,
-            normalized_text=normalize_arabic(text),
-        )
-    )
-    await store.record_document(
-        source_url=source_url,
-        collection_id="stale_collection",
-        source_id="ministry_of_justice",
-        pdf_sha256="b" * 64,
-        case_count=1,
+    await _insert_fixture(
+        store,
         parser_version=max(1, CATALOG_PARSER_VERSION - 1),
+        promote=True,
     )
     provider = CatalogResearchProvider(store)
     subject = SubjectLoader().get_subject("criminology_penology")

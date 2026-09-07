@@ -68,60 +68,102 @@ class OfficialCatalogIndexer:
     ) -> IndexReport:
         documents_seen = documents_indexed = documents_skipped = documents_failed = cases_indexed = 0
         remaining = max_documents if max_documents and max_documents > 0 else None
+        full_generation_refresh = source_filter is None and remaining is None
 
-        for spec in self.manifest.sources:
-            if not spec.enabled or (source_filter and spec.id not in source_filter):
-                continue
-            documents = await self._documents_for(spec)
-            for document_id, url in documents:
-                if remaining is not None and remaining <= 0:
-                    return IndexReport(
-                        documents_seen,
-                        documents_indexed,
-                        documents_skipped,
-                        documents_failed,
-                        cases_indexed,
-                    )
-                documents_seen += 1
-                if remaining is not None:
-                    remaining -= 1
-                if not force and await self.store.is_document_indexed(
-                    url,
-                    parser_version=CATALOG_PARSER_VERSION,
-                ):
-                    documents_skipped += 1
+        if full_generation_refresh:
+            await self.store.start_generation_refresh(CATALOG_PARSER_VERSION)
+
+        try:
+            for spec in self.manifest.sources:
+                if not spec.enabled or (source_filter and spec.id not in source_filter):
                     continue
-                try:
-                    count, pdf_sha256 = await self._index_document(spec, document_id, url)
-                except Exception as exc:
-                    documents_failed += 1
-                    logger.warning(
-                        "Catalog document failed id=%s url=%s reason=%s",
-                        document_id,
+                documents = await self._documents_for(spec)
+                for document_id, url in documents:
+                    if remaining is not None and remaining <= 0:
+                        return IndexReport(
+                            documents_seen,
+                            documents_indexed,
+                            documents_skipped,
+                            documents_failed,
+                            cases_indexed,
+                        )
+                    documents_seen += 1
+                    if remaining is not None:
+                        remaining -= 1
+                    if not force and await self.store.is_document_indexed(
                         url,
-                        exc,
+                        parser_version=CATALOG_PARSER_VERSION,
+                    ):
+                        documents_skipped += 1
+                        continue
+                    try:
+                        count, pdf_sha256 = await self._index_document(spec, document_id, url)
+                    except Exception as exc:
+                        documents_failed += 1
+                        logger.warning(
+                            "Catalog document failed id=%s url=%s reason=%s",
+                            document_id,
+                            url,
+                            exc,
+                        )
+                    else:
+                        documents_indexed += 1
+                        cases_indexed += count
+                        await self.store.record_document(
+                            source_url=url,
+                            collection_id=document_id,
+                            source_id=spec.source_id,
+                            pdf_sha256=pdf_sha256,
+                            case_count=count,
+                            parser_version=CATALOG_PARSER_VERSION,
+                        )
+                    if self.manifest.request_delay_seconds:
+                        await asyncio.sleep(self.manifest.request_delay_seconds)
+
+            report = IndexReport(
+                documents_seen,
+                documents_indexed,
+                documents_skipped,
+                documents_failed,
+                cases_indexed,
+            )
+            if full_generation_refresh:
+                stats = await self.store.stats(parser_version=CATALOG_PARSER_VERSION)
+                if stats.cases <= 0:
+                    await self.store.finish_generation_refresh(
+                        CATALOG_PARSER_VERSION,
+                        success=False,
+                        documents_seen=report.documents_seen,
+                        documents_indexed=report.documents_indexed,
+                        documents_skipped=report.documents_skipped,
+                        documents_failed=report.documents_failed,
+                        cases_indexed=report.cases_indexed,
+                        error="full refresh completed but current parser generation contains zero cases",
                     )
                 else:
-                    documents_indexed += 1
-                    cases_indexed += count
-                    await self.store.record_document(
-                        source_url=url,
-                        collection_id=document_id,
-                        source_id=spec.source_id,
-                        pdf_sha256=pdf_sha256,
-                        case_count=count,
-                        parser_version=CATALOG_PARSER_VERSION,
+                    await self.store.finish_generation_refresh(
+                        CATALOG_PARSER_VERSION,
+                        success=True,
+                        documents_seen=report.documents_seen,
+                        documents_indexed=report.documents_indexed,
+                        documents_skipped=report.documents_skipped,
+                        documents_failed=report.documents_failed,
+                        cases_indexed=report.cases_indexed,
                     )
-                if self.manifest.request_delay_seconds:
-                    await asyncio.sleep(self.manifest.request_delay_seconds)
-
-        return IndexReport(
-            documents_seen,
-            documents_indexed,
-            documents_skipped,
-            documents_failed,
-            cases_indexed,
-        )
+            return report
+        except Exception as exc:
+            if full_generation_refresh:
+                await self.store.finish_generation_refresh(
+                    CATALOG_PARSER_VERSION,
+                    success=False,
+                    documents_seen=documents_seen,
+                    documents_indexed=documents_indexed,
+                    documents_skipped=documents_skipped,
+                    documents_failed=documents_failed,
+                    cases_indexed=cases_indexed,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            raise
 
     async def _documents_for(self, spec: CatalogSourceSpec) -> list[tuple[str, str]]:
         direct = spec.direct_documents()

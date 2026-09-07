@@ -8,7 +8,7 @@ import aiosqlite
 
 from app.db import Database
 
-from .models import CatalogCase, CatalogStats
+from .models import CatalogCase, CatalogGenerationState, CatalogStats
 from .text import normalize_arabic
 
 _CASE_UPSERT_SQL = """
@@ -62,6 +62,141 @@ class CatalogStore:
 
     def _connect(self) -> aiosqlite.Connection:
         return aiosqlite.connect(self.database.path)
+
+    async def generation_state(self, parser_version: int) -> CatalogGenerationState:
+        async with self._connect() as db:
+            cursor = await db.execute(
+                """
+                SELECT parser_version, ready_at, refresh_status, refresh_started_at,
+                       refresh_finished_at, documents_seen, documents_indexed,
+                       documents_skipped, documents_failed, cases_indexed, last_error
+                  FROM catalog_generation_state
+                 WHERE parser_version = ?
+                """,
+                (int(parser_version),),
+            )
+            row = await cursor.fetchone()
+        if row is None:
+            return CatalogGenerationState(
+                parser_version=int(parser_version),
+                is_ready=False,
+                refresh_status="idle",
+            )
+        return CatalogGenerationState(
+            parser_version=int(row[0]),
+            is_ready=row[1] is not None,
+            ready_at=row[1],
+            refresh_status=str(row[2]),
+            refresh_started_at=row[3],
+            refresh_finished_at=row[4],
+            documents_seen=int(row[5]),
+            documents_indexed=int(row[6]),
+            documents_skipped=int(row[7]),
+            documents_failed=int(row[8]),
+            cases_indexed=int(row[9]),
+            last_error=row[10],
+        )
+
+    async def is_generation_ready(self, parser_version: int) -> bool:
+        return (await self.generation_state(parser_version)).is_ready
+
+    async def start_generation_refresh(self, parser_version: int) -> None:
+        """Mark a full generation refresh as running without invalidating an already-ready generation."""
+        async with self._connect() as db:
+            await db.execute(
+                """
+                INSERT INTO catalog_generation_state(
+                    parser_version, refresh_status, refresh_started_at,
+                    refresh_finished_at, documents_seen, documents_indexed,
+                    documents_skipped, documents_failed, cases_indexed, last_error
+                ) VALUES (?, 'running', CURRENT_TIMESTAMP, NULL, 0, 0, 0, 0, 0, NULL)
+                ON CONFLICT(parser_version) DO UPDATE SET
+                    refresh_status='running',
+                    refresh_started_at=CURRENT_TIMESTAMP,
+                    refresh_finished_at=NULL,
+                    documents_seen=0,
+                    documents_indexed=0,
+                    documents_skipped=0,
+                    documents_failed=0,
+                    cases_indexed=0,
+                    last_error=NULL
+                """,
+                (int(parser_version),),
+            )
+            await db.commit()
+
+    async def finish_generation_refresh(
+        self,
+        parser_version: int,
+        *,
+        success: bool,
+        documents_seen: int = 0,
+        documents_indexed: int = 0,
+        documents_skipped: int = 0,
+        documents_failed: int = 0,
+        cases_indexed: int = 0,
+        error: str | None = None,
+    ) -> None:
+        """Finish a full refresh. First successful completion activates the parser generation."""
+        async with self._connect() as db:
+            if success:
+                await db.execute(
+                    """
+                    INSERT INTO catalog_generation_state(
+                        parser_version, ready_at, refresh_status, refresh_started_at,
+                        refresh_finished_at, documents_seen, documents_indexed,
+                        documents_skipped, documents_failed, cases_indexed, last_error
+                    ) VALUES (?, CURRENT_TIMESTAMP, 'success', CURRENT_TIMESTAMP,
+                              CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, NULL)
+                    ON CONFLICT(parser_version) DO UPDATE SET
+                        ready_at=COALESCE(catalog_generation_state.ready_at, CURRENT_TIMESTAMP),
+                        refresh_status='success',
+                        refresh_finished_at=CURRENT_TIMESTAMP,
+                        documents_seen=excluded.documents_seen,
+                        documents_indexed=excluded.documents_indexed,
+                        documents_skipped=excluded.documents_skipped,
+                        documents_failed=excluded.documents_failed,
+                        cases_indexed=excluded.cases_indexed,
+                        last_error=NULL
+                    """,
+                    (
+                        int(parser_version),
+                        max(0, int(documents_seen)),
+                        max(0, int(documents_indexed)),
+                        max(0, int(documents_skipped)),
+                        max(0, int(documents_failed)),
+                        max(0, int(cases_indexed)),
+                    ),
+                )
+            else:
+                await db.execute(
+                    """
+                    INSERT INTO catalog_generation_state(
+                        parser_version, refresh_status, refresh_started_at,
+                        refresh_finished_at, documents_seen, documents_indexed,
+                        documents_skipped, documents_failed, cases_indexed, last_error
+                    ) VALUES (?, 'failed', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(parser_version) DO UPDATE SET
+                        refresh_status='failed',
+                        refresh_finished_at=CURRENT_TIMESTAMP,
+                        documents_seen=excluded.documents_seen,
+                        documents_indexed=excluded.documents_indexed,
+                        documents_skipped=excluded.documents_skipped,
+                        documents_failed=excluded.documents_failed,
+                        cases_indexed=excluded.cases_indexed,
+                        last_error=excluded.last_error
+                    """,
+                    (
+                        int(parser_version),
+                        max(0, int(documents_seen)),
+                        max(0, int(documents_indexed)),
+                        max(0, int(documents_skipped)),
+                        max(0, int(documents_failed)),
+                        max(0, int(cases_indexed)),
+                        (error or "")[:500] or None,
+                    ),
+                )
+            await db.commit()
 
     async def upsert(self, case: CatalogCase) -> None:
         async with self._connect() as db:

@@ -177,10 +177,13 @@ class CatalogFirstResearchProvider:
         limit: int,
         progress: ResearchProgressCallback | None = None,
     ) -> list[CaseCandidate]:
+        state = await self.catalog.store.generation_state(CATALOG_PARSER_VERSION)
         stats = await self.catalog.store.stats(parser_version=CATALOG_PARSER_VERSION)
-        if stats.cases == 0:
+        if not state.is_ready:
             raise CatalogNotReadyError(
-                "Verified official judicial catalog has not finished rebuilding on this deployment"
+                f"parser=v{CATALOG_PARSER_VERSION}; refresh_status={state.refresh_status}; "
+                f"staged_cases={stats.cases}; staged_collections={stats.collections}; "
+                f"staged_sources={stats.sources}"
             )
 
         local = await self.catalog.search_cases(

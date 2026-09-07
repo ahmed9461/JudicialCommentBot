@@ -1,4 +1,4 @@
-"""Load the editable YAML knowledge files for all legal subjects."""
+"""Load editable YAML knowledge files for all legal subjects."""
 
 from __future__ import annotations
 
@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+
+_ALLOWED_RELEVANCE_MODES = {"direct", "methodological"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,6 +22,11 @@ class SubjectProfile:
     name_ar: str
     verification_status: str = "unknown"
     source_notes: str = ""
+    # ``direct`` requires the judgment itself to contain distinctive concepts
+    # from the course. ``methodological`` is reserved for courses whose judicial
+    # assignment is about *how to analyse a judgment* rather than its substantive
+    # legal field (for example research methodology).
+    relevance_mode: str = "direct"
     priority_topics: tuple[str, ...] = field(default_factory=tuple)
     secondary_topics: tuple[str, ...] = field(default_factory=tuple)
     suitable_case_patterns: tuple[str, ...] = field(default_factory=tuple)
@@ -55,16 +62,21 @@ class SubjectLoader:
             raise KeyError(f"Unknown subject slug: {slug}")
 
         data = self._load_yaml(self.subjects_dir / f"{slug}.yaml")
+        relevance_mode = str(data.get("relevance_mode", "direct")).strip().lower()
+        if relevance_mode not in _ALLOWED_RELEVANCE_MODES:
+            raise ValueError(
+                f"Unsupported relevance_mode={relevance_mode!r} in {slug}.yaml; "
+                f"allowed={sorted(_ALLOWED_RELEVANCE_MODES)}"
+            )
         profile = SubjectProfile(
             slug=str(data["slug"]),
             name_ar=str(data["name_ar"]),
             verification_status=str(data.get("verification_status", "unknown")),
             source_notes=str(data.get("source_notes", "")),
+            relevance_mode=relevance_mode,
             priority_topics=tuple(map(str, data.get("priority_topics") or [])),
             secondary_topics=tuple(map(str, data.get("secondary_topics") or [])),
-            suitable_case_patterns=tuple(
-                map(str, data.get("suitable_case_patterns") or [])
-            ),
+            suitable_case_patterns=tuple(map(str, data.get("suitable_case_patterns") or [])),
             avoid_case_patterns=tuple(map(str, data.get("avoid_case_patterns") or [])),
             search_keywords=tuple(map(str, data.get("search_keywords") or [])),
             commentary_focus=tuple(map(str, data.get("commentary_focus") or [])),

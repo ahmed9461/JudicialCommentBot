@@ -1,10 +1,8 @@
-"""Build a reusable local case catalog from official Saudi judicial PDFs.
+"""Build reusable local case-catalog snapshots from official Saudi judicial PDFs.
 
-The catalog is deterministic and provenance-aware: it downloads approved
-official PDFs, finds *primary* judicial headers using the same parser used at
-delivery time, stores exact physical page ranges, and records the source
-SHA-256. References to other cases inside a judgment body never create a new
-catalog boundary.
+Every refresh is isolated in its own generation.  The indexer never mutates the
+active catalog.  Promotion is performed only after the completed generation
+passes quality gates in the CLI/build coordinator.
 """
 
 from __future__ import annotations
@@ -31,18 +29,19 @@ from .text import detect_court_name, detect_judgment_year, make_title, normalize
 
 logger = logging.getLogger(__name__)
 
-# Increment whenever catalog admission/boundary semantics change. Runtime search
-# only exposes rows from this exact parser generation.
+# Increment whenever catalog admission/boundary semantics change.
 CATALOG_PARSER_VERSION = 4
 
 
 @dataclass(frozen=True, slots=True)
 class IndexReport:
+    generation_id: str
     documents_seen: int = 0
     documents_indexed: int = 0
     documents_skipped: int = 0
     documents_failed: int = 0
     cases_indexed: int = 0
+    full_refresh: bool = True
 
 
 class OfficialCatalogIndexer:
@@ -66,12 +65,18 @@ class OfficialCatalogIndexer:
         max_documents: int | None = None,
         force: bool = False,
     ) -> IndexReport:
+        """Build one complete isolated snapshot.
+
+        ``force`` is retained for CLI compatibility, but a blue/green generation
+        is always a fresh snapshot so there is never any active-row reuse to
+        force.  Partial source/max-document runs are diagnostic generations and
+        are discarded automatically; they can never become active.
+        """
+        del force
+        generation_id = await self.store.begin_generation(CATALOG_PARSER_VERSION)
         documents_seen = documents_indexed = documents_skipped = documents_failed = cases_indexed = 0
         remaining = max_documents if max_documents and max_documents > 0 else None
-        full_generation_refresh = source_filter is None and remaining is None
-
-        if full_generation_refresh:
-            await self.store.start_generation_refresh(CATALOG_PARSER_VERSION)
+        full_refresh = source_filter is None and remaining is None
 
         try:
             for spec in self.manifest.sources:
@@ -80,28 +85,22 @@ class OfficialCatalogIndexer:
                 documents = await self._documents_for(spec)
                 for document_id, url in documents:
                     if remaining is not None and remaining <= 0:
-                        return IndexReport(
-                            documents_seen,
-                            documents_indexed,
-                            documents_skipped,
-                            documents_failed,
-                            cases_indexed,
-                        )
+                        break
                     documents_seen += 1
                     if remaining is not None:
                         remaining -= 1
-                    if not force and await self.store.is_document_indexed(
-                        url,
-                        parser_version=CATALOG_PARSER_VERSION,
-                    ):
-                        documents_skipped += 1
-                        continue
                     try:
-                        count, pdf_sha256 = await self._index_document(spec, document_id, url)
+                        count, pdf_sha256 = await self._index_document(
+                            generation_id,
+                            spec,
+                            document_id,
+                            url,
+                        )
                     except Exception as exc:
                         documents_failed += 1
                         logger.warning(
-                            "Catalog document failed id=%s url=%s reason=%s",
+                            "Catalog document failed generation=%s id=%s url=%s reason=%s",
+                            generation_id,
                             document_id,
                             url,
                             exc,
@@ -110,59 +109,56 @@ class OfficialCatalogIndexer:
                         documents_indexed += 1
                         cases_indexed += count
                         await self.store.record_document(
+                            generation_id,
                             source_url=url,
                             collection_id=document_id,
                             source_id=spec.source_id,
                             pdf_sha256=pdf_sha256,
                             case_count=count,
-                            parser_version=CATALOG_PARSER_VERSION,
                         )
+                    await self.store.update_generation_result(
+                        generation_id,
+                        status="building",
+                        documents_seen=documents_seen,
+                        documents_indexed=documents_indexed,
+                        documents_failed=documents_failed,
+                        cases_indexed=cases_indexed,
+                    )
                     if self.manifest.request_delay_seconds:
                         await asyncio.sleep(self.manifest.request_delay_seconds)
+                if remaining is not None and remaining <= 0:
+                    break
 
             report = IndexReport(
-                documents_seen,
-                documents_indexed,
-                documents_skipped,
-                documents_failed,
-                cases_indexed,
+                generation_id=generation_id,
+                documents_seen=documents_seen,
+                documents_indexed=documents_indexed,
+                documents_skipped=documents_skipped,
+                documents_failed=documents_failed,
+                cases_indexed=cases_indexed,
+                full_refresh=full_refresh,
             )
-            if full_generation_refresh:
-                stats = await self.store.stats(parser_version=CATALOG_PARSER_VERSION)
-                if stats.cases <= 0:
-                    await self.store.finish_generation_refresh(
-                        CATALOG_PARSER_VERSION,
-                        success=False,
-                        documents_seen=report.documents_seen,
-                        documents_indexed=report.documents_indexed,
-                        documents_skipped=report.documents_skipped,
-                        documents_failed=report.documents_failed,
-                        cases_indexed=report.cases_indexed,
-                        error="full refresh completed but current parser generation contains zero cases",
-                    )
-                else:
-                    await self.store.finish_generation_refresh(
-                        CATALOG_PARSER_VERSION,
-                        success=True,
-                        documents_seen=report.documents_seen,
-                        documents_indexed=report.documents_indexed,
-                        documents_skipped=report.documents_skipped,
-                        documents_failed=report.documents_failed,
-                        cases_indexed=report.cases_indexed,
-                    )
-            return report
-        except Exception as exc:
-            if full_generation_refresh:
-                await self.store.finish_generation_refresh(
-                    CATALOG_PARSER_VERSION,
-                    success=False,
+            if not full_refresh:
+                await self.store.update_generation_result(
+                    generation_id,
+                    status="discarded",
                     documents_seen=documents_seen,
                     documents_indexed=documents_indexed,
-                    documents_skipped=documents_skipped,
                     documents_failed=documents_failed,
                     cases_indexed=cases_indexed,
-                    error=f"{type(exc).__name__}: {exc}",
+                    error="diagnostic partial refresh; generation was never eligible for activation",
                 )
+            return report
+        except Exception as exc:
+            await self.store.update_generation_result(
+                generation_id,
+                status="failed",
+                documents_seen=documents_seen,
+                documents_indexed=documents_indexed,
+                documents_failed=documents_failed,
+                cases_indexed=cases_indexed,
+                error=f"{type(exc).__name__}: {exc}",
+            )
             raise
 
     async def _documents_for(self, spec: CatalogSourceSpec) -> list[tuple[str, str]]:
@@ -233,6 +229,7 @@ class OfficialCatalogIndexer:
 
     async def _index_document(
         self,
+        generation_id: str,
         spec: CatalogSourceSpec,
         document_id: str,
         url: str,
@@ -248,14 +245,14 @@ class OfficialCatalogIndexer:
             page_texts = [(page.extract_text() or "").strip() for page in reader.pages]
             starts = self._case_starts(page_texts)
             if not starts:
-                await self.store.replace_collection(document_id, [])
+                await self.store.replace_collection(generation_id, document_id, [])
                 logger.info("No primary judicial case boundaries detected in %s", url)
                 return 0, artifact.sha256
 
             parsed_cases: list[CatalogCase] = []
             for position, start_index in enumerate(starts):
                 next_start = starts[position + 1] if position + 1 < len(starts) else len(page_texts)
-                end_index = next_start  # exclusive; next primary header is the only case boundary
+                end_index = next_start
 
                 while end_index - 1 > start_index and len(page_texts[end_index - 1].strip()) < 120:
                     end_index -= 1
@@ -264,11 +261,6 @@ class OfficialCatalogIndexer:
                 if header is None:
                     continue
                 case_number = header.case_number
-
-                # The range may legitimately mention other case numbers in its
-                # reasoning.  That is not a boundary.  A second *primary* header
-                # would already be in ``starts`` and therefore cannot be inside
-                # this range.
                 combined = "\n".join(page_texts[start_index:end_index]).strip()
                 if len(combined) < self.manifest.min_case_text_chars:
                     continue
@@ -307,9 +299,14 @@ class OfficialCatalogIndexer:
                     )
                 )
 
-            indexed = await self.store.replace_collection(document_id, parsed_cases)
+            indexed = await self.store.replace_collection(generation_id, document_id, parsed_cases)
             if indexed:
-                logger.info("Indexed %d primary-header case ranges from official document %s", indexed, url)
+                logger.info(
+                    "Indexed %d primary-header ranges generation=%s document=%s",
+                    indexed,
+                    generation_id,
+                    url,
+                )
             else:
                 logger.info("No usable judgments remained after primary-header verification %s", url)
             return indexed, artifact.sha256
@@ -318,12 +315,7 @@ class OfficialCatalogIndexer:
 
     @staticmethod
     def _case_starts(page_texts: list[str]) -> list[int]:
-        """Return physical pages that begin a high-confidence primary judgment.
-
-        A body paragraph citing another case, an appeal number or a previous
-        judgment is ignored even if it contains ``القضية رقم``.  This is the
-        invariant that prevents neighboring judgments from being merged.
-        """
+        """Return physical pages that begin a high-confidence primary judgment."""
         starts: list[int] = []
         previous_case: str | None = None
         for index, text in enumerate(page_texts):

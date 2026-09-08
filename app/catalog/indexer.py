@@ -32,7 +32,7 @@ from .text import detect_court_name, detect_judgment_year, make_title, normalize
 logger = logging.getLogger(__name__)
 
 # Increment whenever extraction/header/boundary admission semantics change.
-CATALOG_PARSER_VERSION = 5
+CATALOG_PARSER_VERSION = 6
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,13 +171,13 @@ class OfficialCatalogIndexer:
         return []
 
     async def _crawl_official_pdfs(self, spec: CatalogSourceSpec) -> list[tuple[str, str]]:
-        """Conservatively discover official PDFs from one official site.
+        """Discover official judicial PDFs without wandering into unrelated site areas.
 
-        SharePoint-based Saudi government sites do not always expose document
-        links as simple ``href`` attributes. The crawler therefore understands
-        ordinary links plus embedded/escaped PDF paths, but every discovered URL
-        is still reclassified by SourceRegistry and constrained to configured
-        official path prefixes before admission.
+        Navigation pages and downloadable documents have separate allow-lists.
+        This is important on SharePoint government sites where a decisions page
+        links to statistics, annual reports, forms, templates and help material.
+        Those resources are not judicial corpus inputs and are excluded before
+        download rather than counted as parser failures later.
         """
         queue: deque[tuple[str, int]] = deque((url, 0) for url in spec.landing_pages)
         seen_pages: set[str] = set()
@@ -193,7 +193,7 @@ class OfficialCatalogIndexer:
                 if url in seen_pages:
                     continue
                 seen_pages.add(url)
-                if not self.source_registry.is_https_allowed(url):
+                if not self.source_registry.is_https_allowed(url) or not spec.allows_page(url):
                     continue
                 classification = self.source_registry.classify(url)
                 if classification.source_id != spec.source_id:
@@ -208,7 +208,7 @@ class OfficialCatalogIndexer:
                 final_url = str(response.url)
                 content_type = response.headers.get("content-type", "").lower()
                 if "pdf" in content_type or urlparse(final_url).path.lower().endswith(".pdf"):
-                    if self.source_registry.can_be_original_pdf_source(final_url):
+                    if spec.allows_document(final_url) and self.source_registry.can_be_original_pdf_source(final_url):
                         pdfs.add(final_url)
                     continue
                 if depth >= spec.max_depth:
@@ -233,15 +233,11 @@ class OfficialCatalogIndexer:
                     classification = self.source_registry.classify(absolute)
                     if classification.source_id != spec.source_id:
                         continue
-                    if spec.allowed_path_prefixes and not any(
-                        parsed.path.casefold().startswith(prefix.casefold())
-                        for prefix in spec.allowed_path_prefixes
-                    ):
-                        continue
-                    if parsed.path.lower().endswith(".pdf"):
-                        if self.source_registry.can_be_original_pdf_source(absolute):
+                    is_pdf = parsed.path.lower().endswith(".pdf")
+                    if is_pdf:
+                        if spec.allows_document(absolute) and self.source_registry.can_be_original_pdf_source(absolute):
                             pdfs.add(absolute)
-                    else:
+                    elif spec.allows_page(absolute):
                         queue.append((absolute, depth + 1))
         return [
             (

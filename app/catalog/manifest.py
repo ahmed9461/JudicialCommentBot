@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
 
 import yaml
 
@@ -21,7 +22,13 @@ class CatalogSourceSpec:
     landing_pages: tuple[str, ...] = field(default_factory=tuple)
     max_depth: int = 1
     max_pages: int = 100
+    # Backward-compatible broad path filter. New manifests should prefer the
+    # separate page/document filters below so navigation pages do not accidentally
+    # admit reports, forms or unrelated PDFs as judicial documents.
     allowed_path_prefixes: tuple[str, ...] = field(default_factory=tuple)
+    page_path_prefixes: tuple[str, ...] = field(default_factory=tuple)
+    document_path_prefixes: tuple[str, ...] = field(default_factory=tuple)
+    exclude_path_fragments: tuple[str, ...] = field(default_factory=tuple)
 
     def direct_documents(self) -> list[tuple[str, str]]:
         if self.kind != "numbered_pdf_series" or not self.url_template:
@@ -32,6 +39,21 @@ class CatalogSourceSpec:
             (f"{self.id}:v{volume}", self.url_template.format(volume=volume))
             for volume in range(self.volume_start, self.volume_end + 1)
         ]
+
+    def allows_page(self, url: str) -> bool:
+        return self._allows(url, self.page_path_prefixes or self.allowed_path_prefixes)
+
+    def allows_document(self, url: str) -> bool:
+        prefixes = self.document_path_prefixes or self.allowed_path_prefixes
+        return self._allows(url, prefixes)
+
+    def _allows(self, url: str, prefixes: tuple[str, ...]) -> bool:
+        path = urlparse(url).path.casefold()
+        if any(fragment.casefold() in path for fragment in self.exclude_path_fragments):
+            return False
+        if not prefixes:
+            return True
+        return any(path.startswith(prefix.casefold()) for prefix in prefixes)
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +89,9 @@ class CatalogManifestLoader:
                     max_depth=max(0, int(item.get("max_depth", 1))),
                     max_pages=max(1, int(item.get("max_pages", 100))),
                     allowed_path_prefixes=tuple(map(str, item.get("allowed_path_prefixes") or [])),
+                    page_path_prefixes=tuple(map(str, item.get("page_path_prefixes") or [])),
+                    document_path_prefixes=tuple(map(str, item.get("document_path_prefixes") or [])),
+                    exclude_path_fragments=tuple(map(str, item.get("exclude_path_fragments") or [])),
                 )
             )
         return CatalogManifest(

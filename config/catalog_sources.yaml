@@ -1,8 +1,7 @@
-version: 2
+version: 3
 
-# Official-only catalog manifest. Landing-page crawls are discovery mechanisms;
-# every downloaded PDF is still reclassified against config/source_registry.yaml
-# before it can enter a staging generation.
+# Official-only catalog manifest. Navigation and PDF paths are deliberately
+# separated so site-wide reports/forms/templates never become corpus inputs.
 sources:
   - id: moj_1434
     source_id: ministry_of_justice
@@ -10,7 +9,7 @@ sources:
     kind: numbered_pdf_series
     enabled: true
     url_template: https://www.moj.gov.sa/ar-sa/ministry/versions/Documents/backupFiles3/AhkamGroup_1434/{volume}.pdf
-    volumes: {start: 1, end: 22}
+    volumes: {start: 1, end: 25}
 
   - id: moj_1435
     source_id: ministry_of_justice
@@ -25,8 +24,6 @@ sources:
     source_name: ديوان المظالم
     kind: landing_page_crawl
     enabled: true
-    # Seed the official index plus stable year pages. This does not hard-code
-    # individual judgments; it makes discovery resilient to SharePoint paging.
     landing_pages:
       - https://www.bog.gov.sa/knowledge-center/JudicialBlogs/Pages/JudgmentsDefault.aspx
       - https://www.bog.gov.sa/knowledge-center/JudicialBlogs/1433/Pages/default.aspx
@@ -39,13 +36,17 @@ sources:
       - https://www.bog.gov.sa/knowledge-center/JudicialBlogs/1440/Pages/default.aspx
       - https://www.bog.gov.sa/knowledge-center/JudicialBlogs/1441/Pages/default.aspx
       - https://www.bog.gov.sa/knowledge-center/JudicialBlogs/1442/Pages/default.aspx
-    max_depth: 4
-    max_pages: 320
-    allowed_path_prefixes:
+    max_depth: 5
+    max_pages: 500
+    page_path_prefixes:
       - /knowledge-center/JudicialBlogs/
       - /ScientificContent/JudicialBlogs/
-      - /_layouts/
-    pdf_only: true
+    document_path_prefixes:
+      - /ScientificContent/JudicialBlogs/
+      - /knowledge-center/JudicialBlogs/
+    exclude_path_fragments:
+      - /AnnualReports/
+      - /Templates/
 
   - id: gstc_decisions
     source_id: zakat_tax_customs_committees
@@ -53,15 +54,21 @@ sources:
     kind: landing_page_crawl
     enabled: true
     landing_pages:
+      - https://www.gstc.gov.sa/ar/Decisions/Pages/default.aspx
+      - https://www.gstc.gov.sa/ar/Decisions/Pages/decisions.aspx?year=%D8%A7%D9%84%D9%86%D8%B4%D8%B1+%D8%A7%D9%84%D9%81%D9%88%D8%B1%D9%8A+%D9%84%D9%84%D9%82%D8%B1%D8%A7%D8%B1%D8%A7%D8%AA
       - https://www.gstc.gov.sa/ar/DocumentsLb/DecisionsRules/Pages/default.aspx
-    max_depth: 3
-    max_pages: 180
-    allowed_path_prefixes:
+    max_depth: 4
+    max_pages: 260
+    page_path_prefixes:
+      - /ar/Decisions/
       - /ar/DocumentsLb/DecisionsRules/
-      # SharePoint's official download.aspx wrapper is how the live page exposes
-      # many PDFs. It remains on the same trusted government domain.
-      - /_layouts/
-    pdf_only: true
+    document_path_prefixes:
+      - /ar/Decisions/Documents/
+      - /ar/DocumentsLb/DecisionsRules/Documents/
+    exclude_path_fragments:
+      - /AnnualReports/
+      - /Publications/
+      - /Templates/
 
   - id: crsd_decisions
     source_id: securities_disputes
@@ -69,23 +76,27 @@ sources:
     kind: landing_page_crawl
     enabled: true
     landing_pages:
-      - https://crsd.gov.sa/ar/ResolutionsCommittee/Pages/Index.aspx
-    max_depth: 3
-    max_pages: 160
-    allowed_path_prefixes:
-      - /ar/ResolutionsCommittee/
-      - /ar/Decisions/
-      - /ar/Principles/
-      - /_layouts/
-    pdf_only: true
+      - https://crsd.gov.sa/ar/ResolutionsCommittee/Decisions/Pages/default.aspx
+      - https://crsd.gov.sa/ar/AppealsCommittee/Decisions/Pages/default.aspx
+    max_depth: 4
+    max_pages: 240
+    page_path_prefixes:
+      - /ar/ResolutionsCommittee/Decisions/
+      - /ar/AppealsCommittee/Decisions/
+    document_path_prefixes:
+      - /ar/ResolutionsCommittee/Decisions/Documents/
+      - /ar/AppealsCommittee/Decisions/Documents/
+    exclude_path_fragments:
+      - /Statistics/
+      - /Templates/
+      - /Manuals/
+      - /About/
 
   - id: idc_decisions
     source_id: insurance_disputes
     source_name: الأمانة العامة للجان الفصل في المنازعات والمخالفات التأمينية
     kind: landing_page_crawl
     enabled: true
-    # Arabic and English views expose the same official decision library through
-    # different SharePoint paths. Both are seeds; dedup happens by final URL/hash.
     landing_pages:
       - https://www.idc.gov.sa/ar-sa/CommitteesDecisions/Pages/Riyadh.aspx
       - https://www.idc.gov.sa/ar-sa/CommitteesDecisions/Pages/Jeddah.aspx
@@ -93,13 +104,18 @@ sources:
       - https://www.idc.gov.sa/en-us/CommitteesDecisions/Pages/Riyadh.aspx
       - https://www.idc.gov.sa/en-us/CommitteesDecisions/Pages/Jeddah.aspx
       - https://www.idc.gov.sa/en-us/CommitteesDecisions/Pages/Dammam.aspx
-    max_depth: 4
-    max_pages: 300
-    allowed_path_prefixes:
+    max_depth: 5
+    max_pages: 600
+    page_path_prefixes:
       - /ar-sa/CommitteesDecisions/
       - /en-us/CommitteesDecisions/
-      - /_layouts/
-    pdf_only: true
+    document_path_prefixes:
+      - /ar-sa/CommitteesDecisions/
+      - /en-us/CommitteesDecisions/
+    exclude_path_fragments:
+      - /Reports/
+      - /Templates/
+      - /Guides/
 
 rules:
   skip_scanned_without_text: true

@@ -23,27 +23,35 @@ from .headers import (
 from .text import extract_pdf_page_texts
 
 _ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
+_ID = r"[0-9٠-٩۰-۹A-Za-z/\.\-قسهـ]{2,80}"
 _DECISION_LABELS = (
-    re.compile(r"رقم\s*القرار\s*[:：\-]?\s*([0-9٠-٩۰-۹/\-ق]{3,})", re.I),
-    re.compile(r"رقم\s*قرار\s*التصديق\s*[:：\-]?\s*([0-9٠-٩۰-۹/\-ق]{3,})", re.I),
-    re.compile(r"قرار\s*التصديق\s*رقم\s*[:：\-]?\s*([0-9٠-٩۰-۹/\-ق]{3,})", re.I),
+    re.compile(rf"رقم\s*قرار\s*لجنة\s*الفصل\s*[:：\-]?\s*[\(\)（）]*({_ID})", re.I),
+    re.compile(rf"رقم\s*القرار\s*الابتدائي\s*[:：\-]?\s*[\(\)（）]*({_ID})", re.I),
+    re.compile(rf"قرار\s*رقم\s*[:：\-]?\s*[\(\)（）]*({_ID})", re.I),
+    re.compile(rf"رقم\s*القرار\s*[:：\-]?\s*[\(\)（）]*({_ID})", re.I),
+    re.compile(rf"رقم\s*قرار\s*التصديق\s*[:：\-]?\s*[\(\)（）]*({_ID})", re.I),
+    re.compile(rf"قرار\s*التصديق\s*رقم\s*[:：\-]?\s*[\(\)（）]*({_ID})", re.I),
 )
 _DECISION_DATES = (
     re.compile(
-        r"(?:رقم\s*القرار|رقم\s*قرار\s*التصديق|قرار\s*التصديق\s*رقم)"
-        r"\s*[:：\-]?\s*[0-9٠-٩۰-۹/\-ق]{3,}.{0,120}?"
-        r"(?:تاريخه|تاريخ(?:ه)?)\s*[:：\-]?\s*([0-9٠-٩۰-۹/\-]{6,})",
+        rf"(?:رقم\s*القرار(?:\s*الابتدائي)?|رقم\s*قرار\s*التصديق|قرار\s*التصديق\s*رقم|قرار\s*رقم)"
+        rf"\s*[:：\-]?\s*[\(\)（）]*{_ID}[\(\)（）]*.{{0,160}}?"
+        r"(?:تاريخه|تاريخ(?:ه)?|تاريخ\s*صدور\s*القرار(?:\s*الابتدائي)?)\s*[:：\-]?\s*([0-9٠-٩۰-۹/\-]{6,})",
         re.I | re.S,
     ),
 )
 _CASE_YEAR = re.compile(
-    r"(?:رقم\s*)?(?:القضية|القضيـة|الدعوى|الدعـوى)(?:\s*رقم)?"
-    r"\s*[:：\-]?\s*[0-9٠-٩۰-۹/\-ق]{3,}.{0,100}?"
-    r"(?:تاريخها|تاريخ(?:ها)?)\s*[:：\-]?\s*(14[0-9٠-٩۰-۹]{2})",
+    rf"(?:رقم\s*)?(?:القضية|القضيـة|الدعوى|الدعـوى)(?:\s*(?:في\s*المحكمة\s*الإدارية|لدى\s*لجنة\s*الفصل))?(?:\s*رقم)?"
+    rf"\s*[:：\-]?\s*[\(\)（）]*{_ID}[\(\)（）]*.{{0,120}}?"
+    r"(?:تاريخها|تاريخ(?:ها)?|لعام|عام)\s*[:：\-]?\s*(14[0-9٠-٩۰-۹]{2})",
     re.I | re.S,
 )
 _FIRST_COURT = re.compile(r"محكمة\s*الدرجة\s*الأولى\s*[:：\-]?\s*([^\n]{3,180})", re.I)
 _APPEAL_COURT = re.compile(r"محكمة\s*الاستئناف\s*[:：\-]?\s*([^\n]{3,180})", re.I)
+_BOG_COURT = re.compile(r"رقم\s*القضية\s*في\s*(المحكمة\s*الإدارية(?:\s*ب[^\n\d]{2,80})?)", re.I)
+_IDC_COURT = re.compile(r"قرار\s+(اللجنة\s*الابتدائية[^\n]{0,100})", re.I)
+_GSTC_COURT = re.compile(r"^(الدائرة\s+(?:الاستئنافية|االستئنافية|الأولى|الثانية)[^\n]{8,180})$", re.I | re.M)
+_CRSD_COURT = re.compile(r"(لجنة\s*(?:الفصل|الاستئناف)\s*في\s*منازعات\s*الأوراق\s*المالية)", re.I)
 _BAD_COURT_VALUES = {"بعد", "وقد", "رقم", "تاريخ", "تاريخه", "الموافق", "في", "من"}
 
 
@@ -76,7 +84,7 @@ def extract_page_range(source_pdf: Path, *, start_page: int, end_page: int, outp
 
 def extract_judgment_metadata(text: str, *, require_primary_header: bool = False) -> JudgmentMetadata:
     """Extract metadata from the leading official judgment publication header."""
-    sample = text[:7000]
+    sample = text[:9000]
     variants = (sample, "\n".join(line[::-1] for line in sample.splitlines()))
     primary = primary_judicial_header(sample)
     if require_primary_header and primary is None:
@@ -99,6 +107,13 @@ def extract_judgment_metadata(text: str, *, require_primary_header: bool = False
         if court_name is None:
             first_court_match = _FIRST_COURT.search(variant)
             court_name = _court_label(first_court_match.group(1)) if first_court_match else None
+        if court_name is None:
+            for pattern in (_BOG_COURT, _IDC_COURT, _GSTC_COURT, _CRSD_COURT):
+                match = pattern.search(variant)
+                if match:
+                    court_name = _court_label(match.group(1))
+                    if court_name:
+                        break
         if appeal_name is None:
             appeal_match = _APPEAL_COURT.search(variant)
             appeal_name = _court_label(appeal_match.group(1)) if appeal_match else None
@@ -311,7 +326,8 @@ def _court_label(value: str) -> str | None:
     normalized = cleaned.translate(_ARABIC_DIGITS).strip().casefold()
     if len(cleaned) < 6 or normalized in _BAD_COURT_VALUES:
         return None
-    if not any(token in cleaned for token in ("محكمة", "لجنة", "دائرة", "الدائرة")):
+    # Committee/district labels are canonical adjudicating bodies too.
+    if not any(token in cleaned for token in ("محكمة", "لجنة", "اللجنة", "دائرة", "الدائرة")):
         return None
     return cleaned
 
